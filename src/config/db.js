@@ -1,6 +1,19 @@
 import mongoose from 'mongoose'
 import { config } from './env.js'
 
+// Import all models to ensure they're registered with Mongoose
+import '../models/User.js'
+import '../models/Role.js'
+import '../models/Permission.js'
+import '../models/Company.js'
+import '../models/Customer.js'
+import '../models/CustomerType.js'
+import '../models/Product.js'
+import '../models/ProformaInvoice.js'
+import '../models/Invoice.js'
+import '../models/Proposal.js'
+import '../models/Payment.js'
+
 export const connectDB = async () => {
   try {
     const conn = await mongoose.connect(config.mongoUri)
