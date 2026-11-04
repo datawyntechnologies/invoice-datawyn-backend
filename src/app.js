@@ -14,7 +14,6 @@ const __dirname = path.dirname(__filename)
 // Routes
 import authRoutes from './routes/authRoutes.js'
 import customerRoutes from './routes/customerRoutes.js'
-import customerTypeRoutes from './routes/customerTypeRoutes.js'
 import productRoutes from './routes/productRoutes.js'
 import proformaRoutes from './routes/proformaRoutes.js'
 import invoiceRoutes from './routes/invoiceRoutes.js'
@@ -101,7 +100,6 @@ if (!config.isVercel) {
 // API Routes
 app.use('/api/auth', authRoutes)
 app.use('/api/customers', customerRoutes)
-app.use('/api/customer-types', customerTypeRoutes)
 app.use('/api/products', productRoutes)
 app.use('/api/proforma', proformaRoutes)
 app.use('/api/invoices', invoiceRoutes)
