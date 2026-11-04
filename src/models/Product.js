@@ -10,10 +10,10 @@ const productSchema = new mongoose.Schema({
     required: [true, 'Product name is required'],
     trim: true,
   },
-  type: {
+  productType: {
     type: String,
-    enum: ['static', 'dynamic'],
-    default: 'static',
+    enum: ['individual', 'combo'],
+    default: 'individual',
   },
   description: {
     type: String,
