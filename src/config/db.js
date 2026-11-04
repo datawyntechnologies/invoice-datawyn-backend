@@ -10,7 +10,9 @@ import '../models/Product.js'
 import '../models/ProformaInvoice.js'
 import '../models/Invoice.js'
 import '../models/Proposal.js'
-import '../models/Payment.js'
+import '../models/PaymentPlan.js'
+import '../models/PaymentTransaction.js'
+import '../models/PaymentInstallment.js'
 
 export const connectDB = async () => {
   try {
