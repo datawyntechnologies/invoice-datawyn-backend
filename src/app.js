@@ -80,11 +80,12 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }))
 
-// Rate limiting
+// Rate limiting (skip for OPTIONS requests to avoid blocking CORS preflight)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later'
+  message: 'Too many requests from this IP, please try again later',
+  skip: (req) => req.method === 'OPTIONS'
 })
 app.use('/api/auth/', limiter)
 
