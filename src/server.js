@@ -44,5 +44,11 @@ if (!config.isVercel) {
 // Export for Vercel serverless
 export default async function handler(req, res) {
   await connectToDatabase()
-  return app(req, res)
+  // Express app needs to handle the request properly
+  return new Promise((resolve, reject) => {
+    app(req, res, (err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
 }
