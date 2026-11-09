@@ -29,6 +29,7 @@ export default async function handler(req, res) {
     'http://localhost:5174',
     'http://localhost:5175',
     'http://localhost:3000',
+    'https://invoice-datawyntechnologies.vercel.app',
     'https://invoice-datawyntechnologies-three.vercel.app',
     'https://invoice.datawyntechnologies.com'
   ]
