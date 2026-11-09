@@ -216,8 +216,8 @@ export const createProformaInvoice = async (req, res, next) => {
 
         console.log('Generated payment schedule:', paymentSchedule)
 
-        // Validate payment schedule
-        const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, calculations.grandTotal)
+        // Validate payment schedule (allow past dates, consistent with updates)
+        const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, calculations.grandTotal, true)
         if (!validation.valid) {
           console.error('Payment schedule validation failed:', validation.error)
           return errorResponse(res, validation.error)
