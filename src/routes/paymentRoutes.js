@@ -3,6 +3,8 @@ import {
   createPaymentPlan,
   getPaymentPlanByInvoice,
   recordPayment,
+  addManualInstallment,
+  importPaymentSchedule,
   getPaymentHistory,
   updatePaymentPlan,
   deletePaymentPlan,
@@ -27,6 +29,8 @@ router.delete('/:id', /* requirePermission('payment.delete'), */ deletePaymentPl
 
 // Payment Operations
 router.post('/record', /* requirePermission('payment.edit'), */ recordPayment)
+router.post('/installments', /* requirePermission('payment.edit'), */ addManualInstallment)
+router.post('/schedule/import', /* requirePermission('payment.edit'), */ upload.single('file'), importPaymentSchedule)
 router.get('/history/:customer', /* requirePermission('payment.view'), */ getPaymentHistory)
 router.get('/summary/:customer', /* requirePermission('payment.view'), */ getCustomerPaymentSummary)
 

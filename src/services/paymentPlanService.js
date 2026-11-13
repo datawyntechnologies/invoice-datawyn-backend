@@ -6,7 +6,7 @@ class PaymentPlanService {
    * Generate payment schedule based on plan type
    */
   static generatePaymentSchedule(planType, paymentMethod, totalAmount, options = {}) {
-    const { invoiceDate, paymentSchedule, emiDetails } = options
+    const { invoiceDate, paymentSchedule, emiDetails, recurringDetails } = options
 
     switch (planType) {
       case 'full_payment':
@@ -23,6 +23,9 @@ class PaymentPlanService {
 
       case 'emi':
         return this.generateEMISchedule(totalAmount, emiDetails)
+
+      case 'recurring':
+        return this.generateRecurringSchedule(recurringDetails)
 
       case 'custom_payment':
         // Handle custom_payment plan type from frontend
@@ -165,6 +168,53 @@ class PaymentPlanService {
     return schedule
   }
   
+  /**
+   * Recurring - Generate installments at a fixed frequency until the end date
+   */
+  static generateRecurringSchedule(recurringDetails = {}) {
+    const { amount, frequency, startDate, endDate } = recurringDetails
+
+    if (!amount || amount <= 0) {
+      throw new Error('Recurring payment amount is required')
+    }
+    if (!['monthly', 'quarterly', 'yearly'].includes(frequency)) {
+      throw new Error('Recurring frequency must be monthly, quarterly, or yearly')
+    }
+
+    const start = new Date(startDate)
+    const end = new Date(endDate)
+    if (isNaN(start) || isNaN(end)) {
+      throw new Error('Valid service start date and due date are required')
+    }
+    if (start > end) {
+      throw new Error('Service start date cannot be after the due date')
+    }
+
+    const monthsStep = { monthly: 1, quarterly: 3, yearly: 12 }[frequency]
+    const frequencyLabel = frequency.charAt(0).toUpperCase() + frequency.slice(1)
+
+    const schedule = []
+    const dueDate = new Date(start)
+    let guard = 0
+    while (dueDate <= end && guard < 1000) {
+      schedule.push({
+        paymentName: `${frequencyLabel} Payment`,
+        paymentType: 'recurring',
+        amount,
+        percentage: null,
+        dueDate: new Date(dueDate),
+      })
+      dueDate.setMonth(dueDate.getMonth() + monthsStep)
+      guard++
+    }
+
+    if (schedule.length === 0) {
+      throw new Error('No payments fall within the selected period')
+    }
+
+    return schedule
+  }
+
   /**
    * Validate payment schedule against invoice amount
    */

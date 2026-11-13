@@ -66,9 +66,20 @@ export const createProduct = async (req, res, next) => {
       ...req.body,
       createdBy: req.user._id
     }
-    
-    const product = await Product.create(productData)
-    
+
+    // Retry on duplicate auto-generated code (handles concurrent creates)
+    let product
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        product = await Product.create(productData)
+        break
+      } catch (error) {
+        const isDuplicateCode = error.code === 11000 && error.keyPattern?.code
+        if (!isDuplicateCode || attempt === 2 || productData.code) throw error
+        delete productData.code
+      }
+    }
+
     successResponse(res, product, 'Product created successfully', 201)
   } catch (error) {
     next(error)

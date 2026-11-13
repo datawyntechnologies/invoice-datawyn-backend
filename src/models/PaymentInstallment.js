@@ -19,7 +19,7 @@ const paymentInstallmentSchema = new mongoose.Schema({
   },
   paymentType: {
     type: String,
-    enum: ['advance', 'balance', 'milestone', 'emi', 'other'],
+    enum: ['advance', 'balance', 'milestone', 'emi', 'recurring', 'other'],
     default: 'other',
   },
   

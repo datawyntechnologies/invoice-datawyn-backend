@@ -26,7 +26,7 @@ const paymentPlanSchema = new mongoose.Schema({
   // Payment Plan Type
   planType: {
     type: String,
-    enum: ['full_payment', 'advance_50', 'custom_fixed', 'custom_percentage', 'emi'],
+    enum: ['full_payment', 'advance_50', 'custom_fixed', 'custom_percentage', 'emi', 'recurring'],
     required: true,
   },
   
@@ -62,6 +62,17 @@ const paymentPlanSchema = new mongoose.Schema({
     paymentDay: Number, // Day of month (1-31)
     monthlyAmount: Number,
   },
+
+  // Recurring payment specific fields
+  recurringDetails: {
+    amount: Number,
+    frequency: {
+      type: String,
+      enum: ['monthly', 'quarterly', 'yearly'],
+    },
+    startDate: Date,
+    endDate: Date,
+  },
   
   // Status
   status: {
@@ -79,6 +90,10 @@ const paymentPlanSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 })
+
+paymentPlanSchema.virtual('invoiceItems')
+paymentPlanSchema.set('toJSON', { virtuals: true })
+paymentPlanSchema.set('toObject', { virtuals: true })
 
 // Indexes
 paymentPlanSchema.index({ invoiceId: 1 })

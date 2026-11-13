@@ -3,6 +3,7 @@ import PaymentInstallment from '../models/PaymentInstallment.js'
 import PaymentTransaction from '../models/PaymentTransaction.js'
 import ProformaInvoice from '../models/ProformaInvoice.js'
 import Invoice from '../models/Invoice.js'
+import * as XLSX from 'xlsx'
 import { successResponse, errorResponse } from '../utils/response.js'
 
 // Helper function to check and update overdue status
@@ -330,6 +331,207 @@ export const recordPayment = async (req, res, next) => {
   }
 }
 
+// Creates a manual installment record (and a transaction for any paid portion)
+// Does NOT update payment plan totals - callers handle that
+const createManualInstallmentRecord = async (paymentPlan, fields, userId) => {
+  const { paymentName, paymentDate, scheduledAmount, remainingAmount, paymentMethod, notes } = fields
+
+  if (!paymentDate || scheduledAmount === undefined || scheduledAmount === null || scheduledAmount === '') {
+    throw new Error('Payment date and amount are required')
+  }
+
+  const scheduled = Number(scheduledAmount)
+  if (isNaN(scheduled) || scheduled <= 0) {
+    throw new Error('Amount must be greater than 0')
+  }
+
+  const remaining = remainingAmount !== undefined && remainingAmount !== null && remainingAmount !== ''
+    ? Number(remainingAmount)
+    : scheduled
+  if (isNaN(remaining) || remaining < 0 || remaining > scheduled) {
+    throw new Error('Remaining amount must be between 0 and the amount')
+  }
+
+  const amountPaid = Math.round((scheduled - remaining) * 100) / 100
+  const isFullyPaid = remaining <= 0.01
+  const status = isFullyPaid ? 'paid' : amountPaid > 0 ? 'partial' : 'pending'
+
+  const lastInstallment = await PaymentInstallment.findOne({ paymentPlan: paymentPlan._id }).sort({ installmentNumber: -1 })
+  const installment = await PaymentInstallment.create({
+    paymentPlan: paymentPlan._id,
+    installmentNumber: (lastInstallment?.installmentNumber || 0) + 1,
+    paymentName: paymentName || 'Manual Payment',
+    paymentType: 'other',
+    scheduledAmount: scheduled,
+    dueDate: paymentDate,
+    amountPaid,
+    remainingAmount: isFullyPaid ? 0 : remaining,
+    status,
+    paidDate: amountPaid > 0 ? paymentDate : undefined,
+    paymentMethod: amountPaid > 0 ? (paymentMethod || 'other') : undefined,
+    notes,
+  })
+
+  checkOverdueStatus(installment)
+  await installment.save()
+
+  // Record a transaction for the paid portion so it appears in payment history
+  let transaction = null
+  if (amountPaid > 0) {
+    const count = await PaymentTransaction.countDocuments()
+    const year = new Date().getFullYear()
+    const month = String(new Date().getMonth() + 1).padStart(2, '0')
+    const transactionId = `TXN-${year}${month}-${String(count + 1).padStart(6, '0')}`
+    transaction = await PaymentTransaction.create({
+      installment: installment._id,
+      paymentPlan: paymentPlan._id,
+      customer: paymentPlan.customer,
+      transactionId,
+      amount: amountPaid,
+      paymentMethod: paymentMethod || 'other',
+      transactionDate: paymentDate,
+      notes: notes || 'Manual payment entry',
+      recordedBy: userId,
+    })
+  }
+
+  return { installment, transaction, scheduled, amountPaid }
+}
+
+// Recomputes plan totals/status after manual entries change
+const updatePlanTotalsAfterManualEntries = async (paymentPlan) => {
+  const allInstallments = await PaymentInstallment.find({ paymentPlan: paymentPlan._id })
+  paymentPlan.totalPaid = allInstallments.reduce((sum, inst) => sum + inst.amountPaid, 0)
+  paymentPlan.remainingAmount = paymentPlan.totalAmount - paymentPlan.totalPaid
+  if (allInstallments.every(inst => inst.status === 'paid')) {
+    paymentPlan.status = 'completed'
+  } else if (paymentPlan.status === 'completed') {
+    paymentPlan.status = 'active'
+  }
+  await paymentPlan.save()
+  return paymentPlan
+}
+
+// Add a manual installment/payment entry to a payment plan
+export const addManualInstallment = async (req, res, next) => {
+  try {
+    const { paymentPlanId, paymentName, paymentDate, scheduledAmount, remainingAmount, paymentMethod, notes } = req.body
+
+    if (!paymentPlanId) {
+      return errorResponse(res, 'Payment plan is required')
+    }
+
+    const paymentPlan = await PaymentPlan.findById(paymentPlanId)
+    if (!paymentPlan) {
+      return errorResponse(res, 'Payment plan not found', [], 404)
+    }
+
+    let record
+    try {
+      record = await createManualInstallmentRecord(paymentPlan, {
+        paymentName, paymentDate, scheduledAmount, remainingAmount, paymentMethod, notes
+      }, req.user._id)
+    } catch (fieldError) {
+      return errorResponse(res, fieldError.message)
+    }
+
+    // Manual entries add to the plan's total obligation
+    paymentPlan.totalAmount += record.scheduled
+    await paymentPlan.save()
+    await updatePlanTotalsAfterManualEntries(paymentPlan)
+
+    successResponse(res, { installment: record.installment, transaction: record.transaction, paymentPlan }, 'Payment added successfully', 201)
+  } catch (error) {
+    next(error)
+  }
+}
+
+const normalizeImportHeader = (header) =>
+  String(header || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// Bulk import payment schedule rows; each row targets a plan by invoice number
+export const importPaymentSchedule = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return errorResponse(res, 'No file uploaded', [], 400)
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' })
+    const sheetName = workbook.SheetNames[0]
+    if (!sheetName) {
+      return errorResponse(res, 'The uploaded file is empty', [], 400)
+    }
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' })
+    if (rows.length === 0) {
+      return errorResponse(res, 'No data rows found in the file', [], 400)
+    }
+
+    const results = { created: 0, failed: 0, errors: [] }
+    const plansByInvoice = new Map()
+    const scheduledByPlan = new Map()
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 2
+      const row = {}
+      Object.entries(rows[i]).forEach(([key, value]) => {
+        row[normalizeImportHeader(key)] = value
+      })
+
+      try {
+        const invoiceNumber = String(row.invoicenumber || row.invoice || '').trim()
+        if (!invoiceNumber) {
+          throw new Error('Invoice Number is required')
+        }
+
+        let paymentPlan = plansByInvoice.get(invoiceNumber)
+        if (paymentPlan === undefined) {
+          paymentPlan = await PaymentPlan.findOne({ invoiceNumber })
+          if (!paymentPlan) {
+            plansByInvoice.set(invoiceNumber, null)
+            throw new Error(`No payment plan found for invoice "${invoiceNumber}"`)
+          }
+          plansByInvoice.set(invoiceNumber, paymentPlan)
+          scheduledByPlan.set(paymentPlan._id.toString(), 0)
+        }
+        if (!paymentPlan) {
+          throw new Error(`No payment plan found for invoice "${invoiceNumber}"`)
+        }
+
+        const record = await createManualInstallmentRecord(paymentPlan, {
+          paymentName: row.paymentname || row.name || row.payment,
+          paymentDate: row.paymentdate || row.date || row.duedate,
+          scheduledAmount: row.amount,
+          remainingAmount: row.remaining,
+          paymentMethod: row.paymentmethod || row.method,
+          notes: row.notes,
+        }, req.user._id)
+
+        scheduledByPlan.set(paymentPlan._id.toString(), scheduledByPlan.get(paymentPlan._id.toString()) + record.scheduled)
+        results.created++
+      } catch (rowError) {
+        results.failed++
+        results.errors.push({ row: rowNumber, error: rowError.message })
+      }
+    }
+
+    // Apply accumulated totals once per plan
+    for (const [planId, scheduledTotal] of scheduledByPlan) {
+      if (scheduledTotal <= 0) continue
+      const paymentPlan = await PaymentPlan.findById(planId)
+      if (!paymentPlan) continue
+      paymentPlan.totalAmount += scheduledTotal
+      await paymentPlan.save()
+      await updatePlanTotalsAfterManualEntries(paymentPlan)
+    }
+
+    const message = `Import completed: ${results.created} created, ${results.failed} failed`
+    successResponse(res, results, message)
+  } catch (error) {
+    next(error)
+  }
+}
+
 // Get Payment History
 export const getPaymentHistory = async (req, res, next) => {
   try {
@@ -471,7 +673,6 @@ export const getCustomerPaymentSummary = async (req, res, next) => {
 
     // Get all payment plans for customer
     const paymentPlans = await PaymentPlan.find({ customer })
-      .populate('invoiceId', 'invoiceNumber')
 
     console.log('Found payment plans for customer:', paymentPlans.length)
     console.log('Payment plans details:', paymentPlans.map(p => ({
@@ -482,6 +683,24 @@ export const getCustomerPaymentSummary = async (req, res, next) => {
       planType: p.planType,
       totalAmount: p.totalAmount
     })))
+
+    const planInvoiceIds = {
+      proforma: paymentPlans.filter(p => p.invoiceType === 'proforma').map(p => p.invoiceId),
+      invoice: paymentPlans.filter(p => p.invoiceType === 'invoice').map(p => p.invoiceId),
+    }
+    const [proformaInvoices, invoices] = await Promise.all([
+      ProformaInvoice.find({ _id: { $in: planInvoiceIds.proforma } }).select('items'),
+      Invoice.find({ _id: { $in: planInvoiceIds.invoice } }).select('items'),
+    ])
+
+    paymentPlans.forEach((plan) => {
+      const sourceInvoices = plan.invoiceType === 'proforma' ? proformaInvoices : invoices
+      const invoice = sourceInvoices.find(i => i._id.toString() === plan.invoiceId.toString())
+      plan.set('invoiceItems', invoice?.items || [])
+      plan.set('invoiceNumber', invoice?.invoiceNumber || '')
+      plan.set('invoiceDate', invoice?.invoiceDate || null)
+      plan.set('invoiceStatus', invoice?.status || '')
+    })
 
     // Get all installments
     const installmentIds = paymentPlans.map(p => p._id)

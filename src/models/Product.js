@@ -66,10 +66,21 @@ const productSchema = new mongoose.Schema({
 // Generate product code before saving
 productSchema.pre('save', async function(next) {
   if (!this.code) {
-    const count = await mongoose.model('Product').countDocuments()
     const year = new Date().getFullYear()
-    const paddedNumber = String(count + 1).padStart(4, '0')
-    this.code = `PROD-${year}-${paddedNumber}`
+    const prefix = `PROD-${year}-`
+    const lastProduct = await mongoose.model('Product')
+      .findOne({ code: new RegExp(`^${prefix}`) })
+      .sort({ code: -1 })
+      .select('code')
+      .lean()
+
+    let nextNumber = 1
+    if (lastProduct) {
+      const match = lastProduct.code.match(/-(\d+)$/)
+      if (match) nextNumber = parseInt(match[1], 10) + 1
+    }
+
+    this.code = `${prefix}${String(nextNumber).padStart(4, '0')}`
   }
   
   // Handle priceRanges backward compatibility

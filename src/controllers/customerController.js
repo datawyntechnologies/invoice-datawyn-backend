@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js'
+import * as XLSX from 'xlsx'
 import { successResponse, errorResponse, paginatedResponse } from '../utils/response.js'
 
 export const getCustomers = async (req, res, next) => {
@@ -98,6 +99,105 @@ export const deleteCustomer = async (req, res, next) => {
     }
     
     successResponse(res, null, 'Customer deleted successfully')
+  } catch (error) {
+    next(error)
+  }
+}
+
+const normalizeHeader = (header) =>
+  String(header || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+const buildAddress = (row, prefix) => {
+  const address = {}
+  const street = row[`${prefix}street`]
+  const city = row[`${prefix}city`]
+  const state = row[`${prefix}state`]
+  const pincode = row[`${prefix}pincode`] ?? row[`${prefix}pin`]
+  if (street) address.street = String(street)
+  if (city) address.city = String(city)
+  if (state) address.state = String(state)
+  if (pincode) address.pincode = String(pincode)
+  return Object.keys(address).length > 0 ? address : undefined
+}
+
+export const importCustomers = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return errorResponse(res, 'No file uploaded', [], 400)
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' })
+    const sheetName = workbook.SheetNames[0]
+    if (!sheetName) {
+      return errorResponse(res, 'The uploaded file is empty', [], 400)
+    }
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' })
+    if (rows.length === 0) {
+      return errorResponse(res, 'No data rows found in the file', [], 400)
+    }
+
+    const results = { created: 0, updated: 0, failed: 0, errors: [] }
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 2 // +1 for header row, +1 for 0-index
+      const row = {}
+      Object.entries(rows[i]).forEach(([key, value]) => {
+        row[normalizeHeader(key)] = value
+      })
+
+      try {
+        const companyName = String(row.companyname || row.name || '').trim()
+        if (!companyName) {
+          throw new Error('Company Name is required')
+        }
+
+        const email = row.email ? String(row.email).trim().toLowerCase() : undefined
+        const customerType = row.customertype || row.type ? String(row.customertype || row.type).trim() : undefined
+
+        const customerData = {
+          companyName,
+          contactPerson: row.contactperson ? String(row.contactperson).trim() : undefined,
+          email,
+          phone: row.phone ? String(row.phone).trim() : undefined,
+          alternatePhone: row.alternatephone || row.altphone ? String(row.alternatephone || row.altphone).trim() : undefined,
+          customerType,
+          notes: row.notes ? String(row.notes) : undefined,
+          createdBy: req.user._id,
+        }
+
+        const billingAddress = buildAddress(row, 'billing')
+        const shippingAddress = buildAddress(row, 'shipping')
+        if (billingAddress) customerData.billingAddress = billingAddress
+        if (shippingAddress) customerData.shippingAddress = shippingAddress
+
+        // Match existing customer by email first, then by company name
+        let existing = null
+        if (email) {
+          existing = await Customer.findOne({ email })
+        }
+        if (!existing) {
+          existing = await Customer.findOne({ companyName: { $regex: `^${companyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } })
+        }
+
+        if (existing) {
+          Object.entries(customerData).forEach(([key, value]) => {
+            if (value !== undefined) existing[key] = value
+          })
+          await existing.save()
+          results.updated++
+        } else {
+          await Customer.create(customerData)
+          results.created++
+        }
+      } catch (rowError) {
+        results.failed++
+        results.errors.push({ row: rowNumber, error: rowError.message })
+      }
+    }
+
+    const message = `Import completed: ${results.created} created, ${results.updated} updated, ${results.failed} failed`
+    successResponse(res, results, message)
   } catch (error) {
     next(error)
   }

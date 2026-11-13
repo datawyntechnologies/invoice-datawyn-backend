@@ -211,13 +211,18 @@ export const createProformaInvoice = async (req, res, next) => {
             paymentSchedule: paymentPlan.paymentSchedule,
             emiDetails: paymentPlan.emiDetails,
             balanceDueDate: paymentPlan.balanceDueDate,
+            recurringDetails: paymentPlan.recurringDetails,
           }
         )
 
         console.log('Generated payment schedule:', paymentSchedule)
 
         // Validate payment schedule (allow past dates, consistent with updates)
-        const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, calculations.grandTotal, true)
+        // Recurring plans are open-ended, so installments don't need to sum to the invoice total
+        const expectedTotal = paymentPlan.planType === 'recurring'
+          ? paymentSchedule.reduce((sum, item) => sum + (item.amount || 0), 0)
+          : calculations.grandTotal
+        const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, expectedTotal, true)
         if (!validation.valid) {
           console.error('Payment schedule validation failed:', validation.error)
           return errorResponse(res, validation.error)
@@ -238,6 +243,7 @@ export const createProformaInvoice = async (req, res, next) => {
           totalAmount: calculations.grandTotal,
           remainingAmount: calculations.grandTotal,
           emiDetails: paymentPlan.emiDetails,
+          ...(paymentPlan.recurringDetails && { recurringDetails: paymentPlan.recurringDetails }),
           createdBy: req.user._id,
         })
 
@@ -374,11 +380,17 @@ export const updateProformaInvoice = async (req, res, next) => {
               paymentSchedule: paymentPlan.paymentSchedule,
               emiDetails: paymentPlan.emiDetails,
               balanceDueDate: paymentPlan.balanceDueDate,
+              recurringDetails: paymentPlan.recurringDetails,
             }
           )
 
           // Validate payment schedule (allow past dates for updates)
-          const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, calculations?.grandTotal || invoice.grandTotal, true)
+          // Recurring plans are open-ended, so installments don't need to sum to the invoice total
+          const invoiceTotal = calculations?.grandTotal || invoice.grandTotal
+          const expectedTotal = paymentPlan.planType === 'recurring'
+            ? paymentSchedule.reduce((sum, item) => sum + (item.amount || 0), 0)
+            : invoiceTotal
+          const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, expectedTotal, true)
           if (!validation.valid) {
             return errorResponse(res, validation.error)
           }
@@ -387,8 +399,9 @@ export const updateProformaInvoice = async (req, res, next) => {
           await PaymentPlan.findByIdAndUpdate(invoice.paymentPlan, {
             planType: paymentPlan.planType,
             paymentMethod: paymentPlan.paymentMethod,
-            totalAmount: calculations?.grandTotal || invoice.grandTotal,
+            totalAmount: invoiceTotal,
             emiDetails: paymentPlan.emiDetails,
+            recurringDetails: paymentPlan.recurringDetails,
           })
 
           // Delete existing installments and create new ones
@@ -409,20 +422,26 @@ export const updateProformaInvoice = async (req, res, next) => {
           }
         } else {
           // Create new payment plan
+          const invoiceTotal = calculations?.grandTotal || invoice.grandTotal
           const paymentSchedule = PaymentPlanService.generatePaymentSchedule(
             paymentPlan.planType,
             paymentPlan.paymentMethod,
-            calculations?.grandTotal || invoice.grandTotal,
+            invoiceTotal,
             {
               invoiceDate: invoiceData.invoiceDate || invoice.invoiceDate,
               paymentSchedule: paymentPlan.paymentSchedule,
               emiDetails: paymentPlan.emiDetails,
               balanceDueDate: paymentPlan.balanceDueDate,
+              recurringDetails: paymentPlan.recurringDetails,
             }
           )
 
           // Validate payment schedule (allow past dates for updates)
-          const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, calculations?.grandTotal || invoice.grandTotal, true)
+          // Recurring plans are open-ended, so installments don't need to sum to the invoice total
+          const expectedTotal = paymentPlan.planType === 'recurring'
+            ? paymentSchedule.reduce((sum, item) => sum + (item.amount || 0), 0)
+            : invoiceTotal
+          const validation = PaymentPlanService.validatePaymentSchedule(paymentSchedule, expectedTotal, true)
           if (!validation.valid) {
             return errorResponse(res, validation.error)
           }
@@ -452,9 +471,10 @@ export const updateProformaInvoice = async (req, res, next) => {
             customer: invoice.customer,
             planType: dbPlanType,
             ...(paymentPlan.paymentMethod && { paymentMethod: paymentPlan.paymentMethod }),
-            totalAmount: calculations?.grandTotal || invoice.grandTotal,
-            remainingAmount: calculations?.grandTotal || invoice.grandTotal,
+            totalAmount: invoiceTotal,
+            remainingAmount: invoiceTotal,
             emiDetails: paymentPlan.emiDetails,
+            ...(paymentPlan.recurringDetails && { recurringDetails: paymentPlan.recurringDetails }),
             createdBy: req.user._id,
           })
 
