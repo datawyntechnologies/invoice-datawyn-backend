@@ -147,12 +147,16 @@ export const deleteInvoice = async (req, res, next) => {
       return errorResponse(res, 'Invoice not found', [], 404)
     }
 
-    // Delete associated payment plan and installments if exists
+    // Delete associated payment plan, installments and transactions if exists
     if (invoice.paymentPlan) {
       const PaymentPlan = (await import('../models/PaymentPlan.js')).default
       const PaymentInstallment = (await import('../models/PaymentInstallment.js')).default
+      const PaymentTransaction = (await import('../models/PaymentTransaction.js')).default
 
-      // Delete payment installments first
+      // Delete payment transactions first
+      await PaymentTransaction.deleteMany({ paymentPlan: invoice.paymentPlan })
+
+      // Delete payment installments
       await PaymentInstallment.deleteMany({ paymentPlan: invoice.paymentPlan })
 
       // Delete payment plan

@@ -635,12 +635,10 @@ export const deletePaymentPlan = async (req, res, next) => {
     // Delete installments
     await PaymentInstallment.deleteMany({ paymentPlan: id })
 
-    // Remove reference from invoice
-    if (paymentPlan.invoiceType === 'proforma') {
-      await ProformaInvoice.findByIdAndUpdate(paymentPlan.invoiceId, { paymentPlan: null })
-    } else if (paymentPlan.invoiceType === 'invoice') {
-      await Invoice.findByIdAndUpdate(paymentPlan.invoiceId, { paymentPlan: null })
-    }
+    // Remove reference from invoice (clear on both models - a converted
+    // proforma may also have an Invoice doc referencing this plan)
+    await ProformaInvoice.findByIdAndUpdate(paymentPlan.invoiceId, { paymentPlan: null })
+    await Invoice.findByIdAndUpdate(paymentPlan.invoiceId, { paymentPlan: null })
 
     // Delete payment plan
     await PaymentPlan.findByIdAndDelete(id)

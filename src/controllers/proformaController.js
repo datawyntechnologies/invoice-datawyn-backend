@@ -395,16 +395,21 @@ export const updateProformaInvoice = async (req, res, next) => {
             return errorResponse(res, validation.error)
           }
 
-          // Update payment plan
+          // Update payment plan and reset financials since schedule is regenerated
           await PaymentPlan.findByIdAndUpdate(invoice.paymentPlan, {
             planType: paymentPlan.planType,
             paymentMethod: paymentPlan.paymentMethod,
             totalAmount: invoiceTotal,
+            totalPaid: 0,
+            remainingAmount: invoiceTotal,
+            status: 'active',
             emiDetails: paymentPlan.emiDetails,
             recurringDetails: paymentPlan.recurringDetails,
           })
 
-          // Delete existing installments and create new ones
+          // Delete existing transactions and installments, then create new ones
+          const PaymentTransaction = (await import('../models/PaymentTransaction.js')).default
+          await PaymentTransaction.deleteMany({ paymentPlan: invoice.paymentPlan })
           await PaymentInstallment.deleteMany({ paymentPlan: invoice.paymentPlan })
           for (let i = 0; i < paymentSchedule.length; i++) {
             const schedule = paymentSchedule[i]
@@ -518,12 +523,16 @@ export const deleteProformaInvoice = async (req, res, next) => {
       return errorResponse(res, 'Invoice not found', [], 404)
     }
 
-    // Delete associated payment plan and installments if exists
+    // Delete associated payment plan, installments and transactions if exists
     if (invoice.paymentPlan) {
       const PaymentPlan = (await import('../models/PaymentPlan.js')).default
       const PaymentInstallment = (await import('../models/PaymentInstallment.js')).default
+      const PaymentTransaction = (await import('../models/PaymentTransaction.js')).default
 
-      // Delete payment installments first
+      // Delete payment transactions first
+      await PaymentTransaction.deleteMany({ paymentPlan: invoice.paymentPlan })
+
+      // Delete payment installments
       await PaymentInstallment.deleteMany({ paymentPlan: invoice.paymentPlan })
 
       // Delete payment plan
@@ -562,6 +571,7 @@ export const duplicateProformaInvoice = async (req, res, next) => {
       status: 'draft',
       createdBy: req.user._id,
       convertedInvoice: null,
+      paymentPlan: null,
       statusHistory: []
     })
     

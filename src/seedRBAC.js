@@ -21,12 +21,15 @@ const seedRBAC = async () => {
       { name: 'dashboard.view_invoice_value', description: 'View total invoice value card', module: 'dashboard', action: 'read' },
       { name: 'dashboard.view_paid_value', description: 'View total invoice paid value card', module: 'dashboard', action: 'read' },
       { name: 'dashboard.view_pending_value', description: 'View total invoice pending value card', module: 'dashboard', action: 'read' },
+      { name: 'dashboard.view_revenue_chart', description: 'View revenue chart on dashboard', module: 'dashboard', action: 'read' },
 
       // Customer permissions
       { name: 'customers.view', description: 'View customers', module: 'customers', action: 'read' },
       { name: 'customers.create', description: 'Create customers', module: 'customers', action: 'create' },
       { name: 'customers.edit', description: 'Edit customers', module: 'customers', action: 'update' },
       { name: 'customers.delete', description: 'Delete customers', module: 'customers', action: 'delete' },
+      { name: 'customers.view_payment_schedule', description: 'View customer payment schedule tab', module: 'customers', action: 'read' },
+      { name: 'customers.view_payment_history', description: 'View customer payment history', module: 'customers', action: 'read' },
 
       // Product permissions
       { name: 'products.view', description: 'View products', module: 'products', action: 'read' },
@@ -77,7 +80,11 @@ const seedRBAC = async () => {
       { name: 'payment.view', description: 'View payment plans and transactions', module: 'payment', action: 'read' },
       { name: 'payment.create', description: 'Create payment plans', module: 'payment', action: 'create' },
       { name: 'payment.edit', description: 'Edit payment plans and record payments', module: 'payment', action: 'update' },
-      { name: 'payment.delete', description: 'Delete payment plans', module: 'payment', action: 'delete' }
+      { name: 'payment.delete', description: 'Delete payment plans', module: 'payment', action: 'delete' },
+
+      // Data import/export permissions
+      { name: 'data.import', description: 'Import data (customers, products, payment schedules)', module: 'data', action: 'create' },
+      { name: 'data.export', description: 'Export data (customers, products, payment schedules)', module: 'data', action: 'read' }
     ])
     console.log('Created permissions')
 

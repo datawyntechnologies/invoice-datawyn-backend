@@ -9,6 +9,7 @@
     "dev": "nodemon src/server.js",
     "seed": "node seed.js",
     "seed:rbac": "node src/seedRBAC.js",
+    "rbac:permissions": "node src/addFeaturePermissions.js",
     "example:rbac": "node examples/rbacUsageExample.js"
   },
   "keywords": [

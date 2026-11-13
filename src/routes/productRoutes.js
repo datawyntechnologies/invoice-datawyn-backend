@@ -20,7 +20,7 @@ router.route('/')
   .post(requirePermission('products.create'), createProduct)
 
 router.route('/import')
-  .post(requirePermission('products.create'), upload.single('file'), importProducts)
+  .post(requirePermission('data.import'), upload.single('file'), importProducts)
 
 router.route('/:id')
   .get(requirePermission('products.view'), getProduct)

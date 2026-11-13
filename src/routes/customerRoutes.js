@@ -21,7 +21,7 @@ router.route('/')
   .post(requirePermission('customers.create'), createCustomer)
 
 router.route('/import')
-  .post(requirePermission('customers.create'), upload.single('file'), importCustomers)
+  .post(requirePermission('data.import'), upload.single('file'), importCustomers)
 
 router.route('/:id')
   .get(requirePermission('customers.view'), getCustomer)
