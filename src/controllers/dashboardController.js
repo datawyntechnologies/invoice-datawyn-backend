@@ -2,6 +2,8 @@ import Customer from '../models/Customer.js'
 import Product from '../models/Product.js'
 import ProformaInvoice from '../models/ProformaInvoice.js'
 import PaymentPlan from '../models/PaymentPlan.js'
+import User from '../models/User.js'
+import Role from '../models/Role.js'
 import { successResponse } from '../utils/response.js'
 
 export const getStats = async (req, res, next) => {
@@ -11,6 +13,8 @@ export const getStats = async (req, res, next) => {
       totalProducts,
       totalProformaInvoices,
       totalInvoiceValue,
+      totalUsers,
+      totalRoles,
       recentInvoices
     ] = await Promise.all([
       Customer.countDocuments({ isActive: true }),
@@ -19,6 +23,8 @@ export const getStats = async (req, res, next) => {
       ProformaInvoice.aggregate([
         { $group: { _id: null, total: { $sum: '$grandTotal' } } }
       ]),
+      User.countDocuments({ isActive: true }),
+      Role.countDocuments(),
       ProformaInvoice.find()
         .sort({ createdAt: -1 })
         .limit(5)
@@ -57,6 +63,8 @@ export const getStats = async (req, res, next) => {
       totalInvoiceValue: totalInvoiceValue[0]?.total || 0,
       totalPaidAmount,
       totalPendingAmount,
+      totalUsers,
+      totalRoles,
       recentInvoices
     }
 
