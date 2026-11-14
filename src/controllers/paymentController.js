@@ -649,6 +649,52 @@ export const deletePaymentPlan = async (req, res, next) => {
   }
 }
 
+// Delete a payment transaction and reverse its effect on installment/plan totals
+export const deletePaymentTransaction = async (req, res, next) => {
+  try {
+    const { id } = req.params
+
+    const transaction = await PaymentTransaction.findById(id)
+    if (!transaction) {
+      return errorResponse(res, 'Transaction not found', [], 404)
+    }
+
+    const installment = await PaymentInstallment.findById(transaction.installment)
+    const paymentPlan = await PaymentPlan.findById(transaction.paymentPlan)
+
+    if (installment) {
+      installment.amountPaid = Math.max(0, Math.round((installment.amountPaid - transaction.amount) * 100) / 100)
+      installment.remainingAmount = Math.round((installment.remainingAmount + transaction.amount) * 100) / 100
+
+      if (installment.amountPaid <= 0.01) {
+        installment.status = 'pending'
+        installment.paidDate = undefined
+        installment.transactionId = undefined
+      } else {
+        installment.status = 'partial'
+      }
+
+      checkOverdueStatus(installment)
+      await installment.save()
+    }
+
+    if (paymentPlan) {
+      paymentPlan.totalPaid = Math.max(0, Math.round((paymentPlan.totalPaid - transaction.amount) * 100) / 100)
+      paymentPlan.remainingAmount = Math.round((paymentPlan.remainingAmount + transaction.amount) * 100) / 100
+      if (paymentPlan.status === 'completed') {
+        paymentPlan.status = 'active'
+      }
+      await paymentPlan.save()
+    }
+
+    await PaymentTransaction.findByIdAndDelete(id)
+
+    successResponse(res, null, 'Payment transaction deleted successfully')
+  } catch (error) {
+    next(error)
+  }
+}
+
 // Get Customer Payment Summary
 export const getCustomerPaymentSummary = async (req, res, next) => {
   try {

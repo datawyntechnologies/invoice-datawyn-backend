@@ -6,6 +6,7 @@ import {
   addManualInstallment,
   importPaymentSchedule,
   getPaymentHistory,
+  deletePaymentTransaction,
   updatePaymentPlan,
   deletePaymentPlan,
   getCustomerPaymentSummary,
@@ -32,6 +33,7 @@ router.post('/record', /* requirePermission('payment.edit'), */ recordPayment)
 router.post('/installments', /* requirePermission('payment.edit'), */ addManualInstallment)
 router.post('/schedule/import', requirePermission('data.import'), upload.single('file'), importPaymentSchedule)
 router.get('/history/:customer', /* requirePermission('payment.view'), */ getPaymentHistory)
+router.delete('/transactions/:id', requirePermission('payment.edit'), deletePaymentTransaction)
 router.get('/summary/:customer', /* requirePermission('payment.view'), */ getCustomerPaymentSummary)
 
 export default router
