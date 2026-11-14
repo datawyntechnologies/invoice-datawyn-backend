@@ -157,22 +157,61 @@ export const getRevenueChart = async (req, res, next) => {
     }
 
     const invoices = await ProformaInvoice.find(match)
-      .select('invoiceDate grandTotal advanceAmount status')
+      .select('invoiceDate grandTotal advanceAmount status paymentPlan convertedInvoice')
       .lean()
 
     const invoiceIds = invoices.map((inv) => inv._id)
+    const linkedPlanIds = invoices.map((inv) => inv.paymentPlan).filter(Boolean)
+    const convertedInvoiceIds = invoices.map((inv) => inv.convertedInvoice).filter(Boolean)
+
     const paymentPlans = await PaymentPlan.find({
-      invoiceType: 'proforma',
-      invoiceId: { $in: invoiceIds },
-      status: { $in: ['active', 'completed'] }
+      status: { $in: ['active', 'completed'] },
+      $or: [
+        { invoiceType: 'proforma', invoiceId: { $in: invoiceIds } },
+        { invoiceType: 'invoice', invoiceId: { $in: convertedInvoiceIds } },
+        { _id: { $in: linkedPlanIds } }
+      ]
     })
-      .select('invoiceId totalPaid')
+      .select('invoiceType invoiceId totalPaid')
       .lean()
 
+    // Map paid amounts back to proforma invoices
     const planPaidByInvoice = new Map()
+    const planById = new Map(paymentPlans.map((p) => [p._id.toString(), p]))
+
+    const addPaid = (invoice, amount) => {
+      const key = invoice._id.toString()
+      planPaidByInvoice.set(key, (planPaidByInvoice.get(key) || 0) + amount)
+    }
+
+    for (const invoice of invoices) {
+      // Direct paymentPlan reference on the invoice
+      if (invoice.paymentPlan) {
+        const plan = planById.get(invoice.paymentPlan.toString())
+        if (plan) addPaid(invoice, plan.totalPaid || 0)
+      }
+      // Plans pointing at the proforma invoice itself
+      // (handled below via invoiceType match)
+    }
+
+    // Attribute remaining unmatched plans via invoiceId
+    const matchedPlanIds = new Set()
+    for (const invoice of invoices) {
+      if (invoice.paymentPlan) matchedPlanIds.add(invoice.paymentPlan.toString())
+    }
+    const convertedToProforma = new Map(invoices.map((inv) => [inv.convertedInvoice?.toString(), inv]).filter(([k]) => k))
+
     for (const plan of paymentPlans) {
-      const key = plan.invoiceId.toString()
-      planPaidByInvoice.set(key, (planPaidByInvoice.get(key) || 0) + (plan.totalPaid || 0))
+      const planKey = plan._id.toString()
+      if (matchedPlanIds.has(planKey)) continue
+
+      let targetInvoice = null
+      if (plan.invoiceType === 'proforma') {
+        targetInvoice = invoices.find((inv) => inv._id.toString() === plan.invoiceId.toString())
+      } else if (plan.invoiceType === 'invoice') {
+        targetInvoice = convertedToProforma.get(plan.invoiceId.toString())
+      }
+      if (targetInvoice) addPaid(targetInvoice, plan.totalPaid || 0)
     }
 
     const buckets = new Map()
@@ -183,7 +222,8 @@ export const getRevenueChart = async (req, res, next) => {
       }
       const bucket = buckets.get(key)
       const total = invoice.grandTotal || 0
-      const paid = (invoice.advanceAmount || 0) + (planPaidByInvoice.get(invoice._id.toString()) || 0)
+      const rawPaid = (invoice.advanceAmount || 0) + (planPaidByInvoice.get(invoice._id.toString()) || 0)
+      const paid = Math.min(rawPaid, total)
       bucket.total += total
       bucket.paid += paid
       bucket.pending += Math.max(total - paid, 0)
