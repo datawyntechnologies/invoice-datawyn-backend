@@ -1080,7 +1080,6 @@ export class PDFService {
             this.drawProposalPageChrome(doc, companySettings, proposal, theme, i + 1, range.count)
           }
           const buffer = Buffer.concat(chunks)
-          try { fs.rmSync(path.join(process.cwd(), '.tmp-proposal-logo'), { recursive: true, force: true }) } catch (_) {}
           resolve(buffer)
         })
         doc.on('error', reject)
@@ -1153,11 +1152,17 @@ export class PDFService {
     doc.addPage()
     doc.rect(0, 0, 595.28, 842).fill(theme.coverBackground)
     const logo = this.proposalLogoPath(company)
-    if (theme.showLogo !== false && logo) doc.image(logo, 48, 48, { width: 110, height: 50, fit: [110, 50] })
+    let logoLoaded = false
+    if (theme.showLogo !== false && logo) {
+      try {
+        doc.image(logo, 48, 48, { width: 110, height: 50, fit: [110, 50] })
+        logoLoaded = true
+      } catch (_) {}
+    }
     doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(13)
-      .text(company?.companyName || 'Datawyn Technologies', theme.showLogo !== false && logo ? 170 : 48, 55)
+      .text(company?.companyName || 'Datawyn Technologies', logoLoaded ? 170 : 48, 55)
     doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(9)
-      .text('Digital Solutions That Build and Scale', theme.showLogo !== false && logo ? 170 : 48, 72)
+      .text('Digital Solutions That Build and Scale', logoLoaded ? 170 : 48, 72)
     doc.rect(48, 150, 499, 1).fill(theme.divider)
     doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(10).text('PROJECT PROPOSAL', 48, 230)
     doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(30).text(proposal.projectTitle || 'Project Proposal', 48, 252, { width: 499 })
@@ -1396,16 +1401,17 @@ export class PDFService {
     const logo = company?.logo
     if (!logo) return null
     if (logo.startsWith('data:image/')) {
-      const match = logo.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/)
+      const match = logo.match(/^data:image\/(png|jpe?g);base64,(.+)$/i)
       if (!match) return null
-      const extension = match[1] === 'jpeg' ? 'jpg' : match[1]
-      const tempPath = path.join(process.cwd(), '.tmp-proposal-logo', `logo-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`)
-      fs.mkdirSync(path.dirname(tempPath), { recursive: true })
-      fs.writeFileSync(tempPath, Buffer.from(match[2], 'base64'))
-      return tempPath
+      try {
+        return Buffer.from(match[2], 'base64')
+      } catch (_) {
+        return null
+      }
     }
     const clean = logo.replace(/^\/+/, '')
-    const candidates = [path.join(process.cwd(), clean), path.join(process.cwd(), 'server', clean), path.join(process.cwd(), 'server', 'uploads', path.basename(logo))]
+    if (!/\.(png|jpe?g)$/i.test(clean)) return null
+    const candidates = [path.join(process.cwd(), clean), path.join(process.cwd(), 'server', clean), path.join(process.cwd(), 'server', 'uploads', path.basename(logo)), path.join(process.cwd(), 'uploads', path.basename(logo))]
     return candidates.find(candidate => fs.existsSync(candidate)) || null
   }
 
