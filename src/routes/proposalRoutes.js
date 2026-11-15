@@ -7,7 +7,11 @@ import {
   deleteProposal,
   duplicateProposal,
   updateProposalStatus,
-  downloadPDF
+  downloadPDF,
+  sendProposal,
+  createShareLink,
+  revokeShareLink,
+  generateProposalPDF
 } from '../controllers/proposalController.js'
 import { authMiddleware } from '../middleware/authMiddleware.js'
 import { requirePermission } from '../middleware/permissionMiddleware.js'
@@ -28,5 +32,9 @@ router.route('/:id')
 router.post('/:id/duplicate', requirePermission('proposals.create'), duplicateProposal)
 router.patch('/:id/status', requirePermission('proposals.edit'), updateProposalStatus)
 router.get('/:id/pdf', requirePermission('proposals.view'), downloadPDF)
+router.post('/:id/pdf', requirePermission('proposals.view'), generateProposalPDF)
+router.post('/:id/send', requirePermission('proposals.edit'), sendProposal)
+router.post('/:id/share-link', requirePermission('proposals.edit'), createShareLink)
+router.delete('/:id/share-link', requirePermission('proposals.edit'), revokeShareLink)
 
 export default router

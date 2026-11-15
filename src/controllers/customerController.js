@@ -27,7 +27,8 @@ export const getCustomers = async (req, res, next) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .populate('createdBy', 'name email'),
+        .populate('createdBy', 'name email')
+        .lean(),
       Customer.countDocuments(query)
     ])
     

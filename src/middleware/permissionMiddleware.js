@@ -1,6 +1,31 @@
 import User from '../models/User.js'
-import Role from '../models/Role.js'
-import Permission from '../models/Permission.js'
+
+// Single query that loads the user with role + all permissions populated
+const getUserWithPermissions = (userId) =>
+  User.findById(userId)
+    .populate({ path: 'role', populate: { path: 'permissions' } })
+    .populate('permissions')
+
+const getEffectivePermissionNames = (user) => {
+  const names = new Set()
+  user.permissions?.forEach((p) => p.name && names.add(p.name))
+  user.role?.permissions?.forEach((p) => p.name && names.add(p.name))
+  return names
+}
+
+// authMiddleware already loads user + role + permissions populated;
+// only hit the DB again if the request user isn't fully populated
+const resolveUser = async (req) => {
+  const user = req.user
+  if (!user) return null
+
+  const rolePopulated = user.role && typeof user.role === 'object' && Array.isArray(user.role.permissions)
+  const directPopulated = Array.isArray(user.permissions) &&
+    (user.permissions.length === 0 || typeof user.permissions[0] === 'object')
+
+  if (rolePopulated && directPopulated) return user
+  return getUserWithPermissions(user._id || user.id)
+}
 
 /**
  * Check if user has a specific permission
@@ -16,10 +41,7 @@ export const requirePermission = (permissionName) => {
         })
       }
 
-      // Get fresh user data with populated role and permissions
-      const user = await User.findById(req.user._id)
-        .populate('role')
-        .populate('permissions')
+      const user = await resolveUser(req)
 
       if (!user) {
         return res.status(401).json({
@@ -28,21 +50,7 @@ export const requirePermission = (permissionName) => {
         })
       }
 
-      // Check if user has the permission directly
-      const hasDirectPermission = user.permissions.some(
-        p => p.name === permissionName
-      )
-
-      // Check if user has permission through role
-      let hasRolePermission = false
-      if (user.role) {
-        const populatedRole = await Role.findById(user.role._id).populate('permissions')
-        hasRolePermission = populatedRole.permissions.some(
-          p => p.name === permissionName
-        )
-      }
-
-      if (!hasDirectPermission && !hasRolePermission) {
+      if (!getEffectivePermissionNames(user).has(permissionName)) {
         return res.status(403).json({
           success: false,
           message: `Permission denied: ${permissionName} required`
@@ -74,9 +82,7 @@ export const requireAnyPermission = (permissionNames) => {
         })
       }
 
-      const user = await User.findById(req.user._id)
-        .populate('role')
-        .populate('permissions')
+      const user = await resolveUser(req)
 
       if (!user) {
         return res.status(401).json({
@@ -85,21 +91,10 @@ export const requireAnyPermission = (permissionNames) => {
         })
       }
 
-      // Check direct permissions
-      const hasDirectPermission = user.permissions.some(
-        p => permissionNames.includes(p.name)
-      )
+      const effectivePermissions = getEffectivePermissionNames(user)
+      const hasPermission = permissionNames.some((name) => effectivePermissions.has(name))
 
-      // Check role permissions
-      let hasRolePermission = false
-      if (user.role) {
-        const populatedRole = await Role.findById(user.role._id).populate('permissions')
-        hasRolePermission = populatedRole.permissions.some(
-          p => permissionNames.includes(p.name)
-        )
-      }
-
-      if (!hasDirectPermission && !hasRolePermission) {
+      if (!hasPermission) {
         return res.status(403).json({
           success: false,
           message: `Permission denied: One of ${permissionNames.join(', ')} required`
@@ -131,9 +126,7 @@ export const requireAllPermissions = (permissionNames) => {
         })
       }
 
-      const user = await User.findById(req.user._id)
-        .populate('role')
-        .populate('permissions')
+      const user = await resolveUser(req)
 
       if (!user) {
         return res.status(401).json({
@@ -142,17 +135,8 @@ export const requireAllPermissions = (permissionNames) => {
         })
       }
 
-      // Collect all user permissions (direct + role)
-      const allPermissions = [...user.permissions]
-      if (user.role) {
-        const populatedRole = await Role.findById(user.role._id).populate('permissions')
-        allPermissions.push(...populatedRole.permissions)
-      }
-
-      // Check if user has all required permissions
-      const hasAllPermissions = permissionNames.every(requiredPerm =>
-        allPermissions.some(p => p.name === requiredPerm)
-      )
+      const effectivePermissions = getEffectivePermissionNames(user)
+      const hasAllPermissions = permissionNames.every((name) => effectivePermissions.has(name))
 
       if (!hasAllPermissions) {
         return res.status(403).json({

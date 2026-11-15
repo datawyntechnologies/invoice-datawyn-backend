@@ -36,7 +36,8 @@ export const getInvoices = async (req, res, next) => {
         .populate('customer', 'companyName')
         .populate('proformaInvoice', 'invoiceNumber')
         .populate('paymentPlan')
-        .populate('createdBy', 'name'),
+        .populate('createdBy', 'name')
+        .lean(),
       Invoice.countDocuments(query)
     ])
     

@@ -39,7 +39,8 @@ export const getProformaInvoices = async (req, res, next) => {
         .limit(parseInt(limit))
         .populate('customer', 'companyName')
         .populate('paymentPlan')
-        .populate('createdBy', 'name'),
+        .populate('createdBy', 'name')
+        .lean(),
       ProformaInvoice.countDocuments(query)
     ])
     

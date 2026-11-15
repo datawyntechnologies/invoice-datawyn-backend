@@ -127,6 +127,7 @@ const proposalSchema = new mongoose.Schema({
     required: true,
   },
   validUntil: Date,
+  sentAt: Date,
   
   // Project Information
   projectTitle: {
@@ -218,6 +219,13 @@ const proposalSchema = new mongoose.Schema({
   
   // Payment Details
   paymentTerms: String,
+  paymentSchedule: [{
+    stage: String,
+    dueDate: Date,
+    percentage: Number,
+    amount: Number,
+    description: String,
+  }],
   advanceAmount: {
     type: Number,
     default: 0,
@@ -233,9 +241,34 @@ const proposalSchema = new mongoose.Schema({
   // Status & Tracking
   status: {
     type: String,
-    enum: ['draft', 'sent', 'viewed', 'accepted', 'rejected', 'expired'],
+    enum: ['draft', 'sent', 'viewed', 'under_review', 'changes_requested', 'accepted', 'rejected', 'expired'],
     default: 'draft',
   },
+  sharing: {
+    tokenHash: { type: String, select: false },
+    tokenVersion: { type: Number, default: 0 },
+    enabled: { type: Boolean, default: false },
+    expiresAt: Date,
+    revokedAt: Date,
+    lastViewedAt: Date,
+    pdfTheme: mongoose.Schema.Types.Mixed,
+  },
+  clientDecision: {
+    acceptedAt: Date,
+    rejectedAt: Date,
+    changesRequestedAt: Date,
+    changesRequestedBy: String,
+    changeRequest: String,
+    acceptedBy: String,
+    acceptedVersion: Number,
+  },
+  versionHistory: [{
+    version: Number,
+    snapshot: mongoose.Schema.Types.Mixed,
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    changedAt: { type: Date, default: Date.now },
+    reason: String,
+  }],
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

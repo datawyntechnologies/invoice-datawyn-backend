@@ -19,6 +19,8 @@ import productRoutes from './routes/productRoutes.js'
 import proformaRoutes from './routes/proformaRoutes.js'
 import invoiceRoutes from './routes/invoiceRoutes.js'
 import proposalRoutes from './routes/proposalRoutes.js'
+import proposalThemeRoutes from './routes/proposalThemeRoutes.js'
+import publicProposalRoutes from './routes/publicProposalRoutes.js'
 import companyRoutes from './routes/companyRoutes.js'
 import dashboardRoutes from './routes/dashboardRoutes.js'
 import userRoutes from './routes/userRoutes.js'
@@ -108,6 +110,8 @@ app.use('/api/products', productRoutes)
 app.use('/api/proforma', proformaRoutes)
 app.use('/api/invoices', invoiceRoutes)
 app.use('/api/proposals', proposalRoutes)
+app.use('/api/proposal-themes', proposalThemeRoutes)
+app.use('/api/public/proposals', publicProposalRoutes)
 app.use('/api/company', companyRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/users', userRoutes)

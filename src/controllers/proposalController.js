@@ -1,13 +1,23 @@
+import { config } from '../config/env.js'
+import crypto from 'crypto'
+import mongoose from 'mongoose'
 import Proposal from '../models/Proposal.js'
 import Customer from '../models/Customer.js'
 import CompanySettings from '../models/CompanySettings.js'
+import ProposalTheme from '../models/ProposalTheme.js'
 import { generateProposalNumber } from '../utils/generateInvoiceNumber.js'
 import { CalculationService } from '../services/calculationService.js'
 import { PDFService } from '../services/pdfService.js'
+import { EmailService } from '../services/emailService.js'
+import { normalizeProposalTheme } from '../utils/proposalThemes.js'
 import { successResponse, errorResponse, paginatedResponse } from '../utils/response.js'
 
 export const getProposals = async (req, res, next) => {
   try {
+    await Proposal.updateMany(
+      { status: { $in: ['sent', 'viewed', 'under_review', 'changes_requested'] }, validUntil: { $lt: new Date() } },
+      { $set: { status: 'expired' } }
+    )
     const { page = 1, limit = 10, search, status, customer } = req.query
     
     const query = {}
@@ -32,6 +42,7 @@ export const getProposals = async (req, res, next) => {
     
     const [proposals, total] = await Promise.all([
       Proposal.find(query)
+        .select('-sharing.tokenHash -versionHistory.snapshot')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
@@ -54,6 +65,7 @@ export const getProposals = async (req, res, next) => {
 export const getProposal = async (req, res, next) => {
   try {
     const proposal = await Proposal.findById(req.params.id)
+      .select('-sharing.tokenHash -versionHistory.snapshot')
       .populate('customer', 'companyName')
       .populate('createdBy', 'name')
       .populate('updatedBy', 'name')
@@ -194,6 +206,8 @@ export const createProposal = async (req, res, next) => {
       ...proposalData
     })
     
+    snapshotProposal(proposal, req.user._id, 'Initial proposal version')
+    await proposal.save()
     successResponse(res, proposal, 'Proposal created successfully', 201)
   } catch (error) {
     next(error)
@@ -307,6 +321,8 @@ export const updateProposal = async (req, res, next) => {
       { new: true, runValidators: true }
     ).populate('customer', 'companyName')
     
+    snapshotProposal(updatedProposal, req.user._id, 'Proposal updated')
+    await updatedProposal.save()
     successResponse(res, updatedProposal, 'Proposal updated successfully')
   } catch (error) {
     next(error)
@@ -348,8 +364,13 @@ export const duplicateProposal = async (req, res, next) => {
       status: 'draft',
       createdBy: req.user._id,
       updatedBy: undefined,
-      statusHistory: []
+      statusHistory: [],
+      versionHistory: [],
+      sharing: { enabled: false },
+      clientDecision: undefined
     })
+    snapshotProposal(duplicate, req.user._id, 'Duplicated proposal version')
+    await duplicate.save()
     
     successResponse(res, duplicate, 'Proposal duplicated successfully', 201)
   } catch (error) {
@@ -364,6 +385,11 @@ export const updateProposalStatus = async (req, res, next) => {
     const proposal = await Proposal.findById(req.params.id)
     if (!proposal) {
       return errorResponse(res, 'Proposal not found', [], 404)
+    }
+    
+    const validStatuses = ['draft', 'sent', 'viewed', 'under_review', 'changes_requested', 'accepted', 'rejected', 'expired']
+    if (!validStatuses.includes(status)) {
+      return errorResponse(res, 'Invalid proposal status')
     }
     
     // Add to status history
@@ -385,41 +411,198 @@ export const updateProposalStatus = async (req, res, next) => {
 
 export const downloadPDF = async (req, res, next) => {
   try {
-    console.log('Starting PDF generation for proposal:', req.params.id)
-    
     const proposal = await Proposal.findById(req.params.id)
-      .populate('customer', 'companyName')
-    
-    if (!proposal) {
-      return errorResponse(res, 'Proposal not found', [], 404)
-    }
-    
-    console.log('Proposal found:', proposal.proposalNumber)
-    
-    const companySettings = await CompanySettings.findOne()
-    console.log('Company settings found:', !!companySettings)
-    
-    // Ensure proposal has required arrays to prevent errors
-    const safeProposal = {
-      ...proposal.toObject(),
-      scopeOfWork: proposal.scopeOfWork || [],
-      deliverables: proposal.deliverables || [],
-      technologyStack: proposal.technologyStack || [],
-      items: proposal.items || [],
-      timeline: proposal.timeline || {}
-    }
-    
-    const pdfBuffer = await PDFService.generateProposal(safeProposal, companySettings)
-    
-    console.log('PDF generated successfully, size:', pdfBuffer.length)
-    
+    if (!proposal) return errorResponse(res, 'Proposal not found', [], 404)
+    const [companySettings, theme] = await Promise.all([CompanySettings.findOne(), getProposalThemeForRequest(req, proposal)])
+    const pdfBuffer = await PDFService.generateProposal(preparePublicProposal(proposal.toObject()), companySettings, theme)
+    const filename = proposalFilename(proposal)
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${proposal.proposalNumber}.pdf"`)
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('X-Proposal-Filename', encodeURIComponent(filename))
     res.send(pdfBuffer)
   } catch (error) {
     console.error('PDF generation error:', error)
-    console.error('Error stack:', error.stack)
-    console.error('Error message:', error.message)
     return errorResponse(res, `Failed to generate PDF: ${error.message}`, [], 500)
   }
+}
+
+const preparePublicProposal = (proposal) => ({
+  ...proposal,
+  scopeOfWork: proposal.scopeOfWork || [],
+  deliverables: proposal.deliverables || [],
+  technologyStack: proposal.technologyStack || [],
+  items: proposal.items || [],
+  timeline: proposal.timeline || {},
+  paymentSchedule: proposal.paymentSchedule || [],
+  internalNotes: undefined,
+  customer: undefined,
+  createdBy: undefined,
+  updatedBy: undefined,
+  sharing: undefined,
+  clientDecision: undefined,
+  versionHistory: undefined,
+  statusHistory: undefined
+})
+
+const getProposalThemeForRequest = async (req, proposal) => {
+  if (proposal?.sharing?.pdfTheme?.config) return normalizeProposalTheme(proposal.sharing.pdfTheme.config)
+  const themeId = req.body?.themeId || req.query?.themeId
+  if (themeId && mongoose.isValidObjectId(themeId)) {
+    const theme = await ProposalTheme.findById(themeId)
+    if (theme) return normalizeProposalTheme(theme.config)
+  }
+  const theme = await ProposalTheme.findOne({ isDefault: true }).lean()
+  return normalizeProposalTheme(theme?.config)
+}
+
+const proposalFilename = (proposal) => {
+  const client = proposal.customerSnapshot?.companyName || 'Client'
+  const safeClient = client.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return `Datawyn_Proposal_${proposal.proposalNumber}_${safeClient}.pdf`
+}
+
+const addStatusHistory = (proposal, status, userId, notes = '') => {
+  proposal.statusHistory.push({ status, changedBy: userId, changedAt: new Date(), notes })
+  proposal.status = status
+}
+
+const snapshotProposal = (proposal, userId, reason) => {
+  const currentVersion = proposal.versionHistory?.length || 0
+  proposal.versionHistory = [...(proposal.versionHistory || []), {
+    version: currentVersion + 1,
+    snapshot: preparePublicProposal(proposal.toObject ? proposal.toObject() : proposal),
+    changedBy: userId,
+    changedAt: new Date(),
+    reason
+  }]
+  proposal.clientDecision = { ...(proposal.clientDecision || {}), acceptedVersion: currentVersion + 1 }
+}
+
+export const generateProposalPDF = async (req, res, next) => {
+  try {
+    const proposal = await Proposal.findById(req.params.id)
+    if (!proposal) return errorResponse(res, 'Proposal not found', [], 404)
+    const [companySettings, theme] = await Promise.all([CompanySettings.findOne(), getProposalThemeForRequest(req, proposal)])
+    const pdfBuffer = await PDFService.generateProposal(preparePublicProposal(proposal.toObject()), companySettings, theme)
+    successResponse(res, { filename: proposalFilename(proposal), generatedAt: new Date(), themeId: theme.themeId })
+  } catch (error) { next(error) }
+}
+
+export const sendProposal = async (req, res, next) => {
+  try {
+    const proposal = await Proposal.findById(req.params.id)
+    if (!proposal) return errorResponse(res, 'Proposal not found', [], 404)
+    const email = req.body.email || proposal.customerSnapshot?.email
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return errorResponse(res, 'A valid client email is required')
+    const [companySettings, theme] = await Promise.all([CompanySettings.findOne(), getProposalThemeForRequest(req, proposal)])
+    const pdfBuffer = await PDFService.generateProposal(preparePublicProposal(proposal.toObject()), companySettings, theme)
+    const share = await ensureShareLink(proposal, req.user._id, req.body.expiresInDays)
+    await EmailService.sendProposal(proposal.toObject(), { ...req.body, email }, pdfBuffer, companySettings, theme, share.url)
+    addStatusHistory(proposal, 'sent', req.user._id, 'Proposal sent by email')
+    proposal.sentAt = new Date()
+    await proposal.save()
+    successResponse(res, { shareUrl: share.url, status: proposal.status }, 'Proposal email sent successfully')
+  } catch (error) {
+    console.error('Proposal email error:', error)
+    return errorResponse(res, `Failed to send proposal: ${error.message}`, [], 500)
+  }
+}
+
+const ensureShareLink = async (proposal, userId, expiresInDays = 30) => {
+  const token = crypto.randomBytes(32).toString('base64url')
+  proposal.sharing = {
+    ...(proposal.sharing || {}),
+    tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+    tokenVersion: (proposal.sharing?.tokenVersion || 0) + 1,
+    enabled: true,
+    expiresAt: new Date(Date.now() + Math.min(Math.max(Number(expiresInDays) || 30, 1), 365) * 86400000),
+    revokedAt: null,
+    pdfTheme: proposal.sharing?.pdfTheme || undefined
+  }
+  await proposal.save()
+  const base = (config.clientUrl?.[0] || process.env.CLIENT_URL || '').replace(/\/$/, '')
+  return { token, url: `${base}/proposal/view/${token}` }
+}
+
+export const createShareLink = async (req, res, next) => {
+  try {
+    const proposal = await Proposal.findById(req.params.id)
+    if (!proposal) return errorResponse(res, 'Proposal not found', [], 404)
+    const share = await ensureShareLink(proposal, req.user._id, req.body.expiresInDays)
+    successResponse(res, { url: share.url, expiresAt: proposal.sharing.expiresAt }, 'Proposal link created')
+  } catch (error) { next(error) }
+}
+
+export const revokeShareLink = async (req, res, next) => {
+  try {
+    const proposal = await Proposal.findById(req.params.id)
+    if (!proposal) return errorResponse(res, 'Proposal not found', [], 404)
+    proposal.sharing.enabled = false
+    proposal.sharing.revokedAt = new Date()
+    proposal.sharing.tokenHash = undefined
+    await proposal.save()
+    successResponse(res, null, 'Proposal link revoked')
+  } catch (error) { next(error) }
+}
+
+const findPublicProposal = async (token) => {
+  if (!token || token.length < 20) return null
+  const hash = crypto.createHash('sha256').update(token).digest('hex')
+  const proposal = await Proposal.findOne({ 'sharing.tokenHash': hash, 'sharing.enabled': true }).select('+sharing.tokenHash')
+  if (!proposal || proposal.sharing.revokedAt || (proposal.sharing.expiresAt && proposal.sharing.expiresAt < new Date())) return null
+  return proposal
+}
+
+export const getPublicProposal = async (req, res, next) => {
+  try {
+    const proposal = await findPublicProposal(req.params.token)
+    if (!proposal) return errorResponse(res, 'This proposal link is invalid or has expired', [], 404)
+    const company = await CompanySettings.findOne().select('companyName logo website email phone address authorizedSignatory')
+    const firstView = !proposal.sharing.lastViewedAt
+    if (firstView) {
+      addStatusHistory(proposal, 'viewed', undefined, 'Client opened secure proposal link')
+    }
+    proposal.sharing.lastViewedAt = new Date()
+    await proposal.save()
+    successResponse(res, { proposal: preparePublicProposal(proposal.toObject()), company, viewedAt: proposal.sharing.lastViewedAt })
+  } catch (error) { next(error) }
+}
+
+export const getPublicProposalPDF = async (req, res, next) => {
+  try {
+    const proposal = await findPublicProposal(req.params.token)
+    if (!proposal) return errorResponse(res, 'This proposal link is invalid or has expired', [], 404)
+    const [company, theme] = await Promise.all([CompanySettings.findOne(), ProposalTheme.findOne({ isDefault: true })])
+    const pdfBuffer = await PDFService.generateProposal(preparePublicProposal(proposal.toObject()), company, normalizeProposalTheme(theme?.config))
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${proposalFilename(proposal)}"`)
+    res.send(pdfBuffer)
+  } catch (error) { next(error) }
+}
+
+export const respondToPublicProposal = async (req, res, next) => {
+  try {
+    const proposal = await findPublicProposal(req.params.token)
+    if (!proposal) return errorResponse(res, 'This proposal link is invalid or has expired', [], 404)
+    const action = req.params.action
+    const allowed = ['accept', 'reject', 'request-changes']
+    if (!allowed.includes(action)) return errorResponse(res, 'Unsupported proposal action')
+    if (['accepted', 'rejected'].includes(proposal.status)) return errorResponse(res, 'This proposal has already been finalized', [], 409)
+    const statusMap = { accept: 'accepted', reject: 'rejected', 'request-changes': 'changes_requested' }
+    const status = statusMap[action]
+    proposal.statusHistory.push({ status, changedAt: new Date(), notes: req.body.message || req.body.changeRequest || '' })
+    proposal.status = status
+    proposal.clientDecision = {
+      ...(proposal.clientDecision || {}),
+      acceptedAt: action === 'accept' ? new Date() : undefined,
+      rejectedAt: action === 'reject' ? new Date() : undefined,
+      changesRequestedAt: action === 'request-changes' ? new Date() : undefined,
+      changesRequestedBy: req.body.name || proposal.customerSnapshot?.contactPerson,
+      changeRequest: req.body.message || req.body.changeRequest,
+      acceptedBy: action === 'accept' ? (req.body.name || proposal.customerSnapshot?.contactPerson) : undefined,
+      acceptedVersion: action === 'accept' ? (proposal.versionHistory?.length || 1) : proposal.clientDecision?.acceptedVersion
+    }
+    await proposal.save()
+    successResponse(res, { status }, 'Proposal response recorded')
+  } catch (error) { next(error) }
 }

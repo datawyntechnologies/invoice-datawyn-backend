@@ -418,6 +418,22 @@ export const EmailService = {
     }
   },
 
+  async sendProposal(proposal, emailData, pdfBuffer, companySettings, theme, shareUrl) {
+    const transporter = initializeTransporter()
+    await transporter.verify()
+    const clientName = proposal.customerSnapshot?.contactPerson || proposal.customerSnapshot?.companyName || 'Valued Client'
+    const message = emailData.message || `Dear ${clientName},\n\nGreetings from Datawyn Technologies!\n\nPlease find attached our project proposal for ${proposal.projectTitle}.\n\nThe document includes the project overview, objectives, scope of work, deliverables, project timeline, pricing, and payment terms.\n\nKindly review the proposal and let us know if you have any questions or modifications.\n\nWe look forward to working with you.\n\nBest Regards,\nDatawyn Technologies\nDigital Solutions That Build And Scale`
+    const escaped = (value = '') => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM || companySettings?.email || 'noreply@datawyn.com',
+      to: emailData.email,
+      subject: emailData.subject || `Project Proposal – ${proposal.projectTitle} | Datawyn Technologies`,
+      html: `<div style="font-family:Arial,sans-serif;color:#222;max-width:680px;margin:auto"><div style="background:#111;color:#fff;padding:28px;text-align:center"><h1 style="margin:0;font-size:24px">PROJECT PROPOSAL</h1><p style="margin:8px 0 0;color:#d1d5db">${escaped(companySettings?.companyName || 'Datawyn Technologies')}</p></div><div style="padding:30px"><p>Dear ${escaped(clientName)},</p><p>${escaped(message).replace(/\n/g, '<br>')}</p>${shareUrl ? `<p><a href="${escaped(shareUrl)}" style="display:inline-block;background:#111;color:#fff;padding:12px 20px;text-decoration:none">Review Proposal Online</a></p>` : ''}<p style="color:#6b7280;font-size:13px">The proposal PDF is attached to this email.</p><p>Best Regards,<br><strong>${escaped(companySettings?.companyName || 'Datawyn Technologies')}</strong><br>Digital Solutions That Build And Scale</p></div></div>`,
+      attachments: [{ filename: emailData.filename || `${proposal.proposalNumber}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }]
+    })
+    return { success: true }
+  },
+
   async sendInvoiceWithCustomPDF(invoiceId, { email, message, pdfBuffer, invoice, companySettings }) {
     try {
       console.log('Sending invoice with custom PDF:', invoiceId)

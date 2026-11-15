@@ -160,12 +160,12 @@ export const getPaymentPlanByInvoice = async (req, res, next) => {
       paymentPlan: paymentPlan._id,
     }).sort({ installmentNumber: 1 })
     
-    // Check overdue status for all installments
-    for (const installment of installments) {
+    // Check overdue status for all installments (parallel, save only changed)
+    await Promise.all(installments.map(async (installment) => {
       checkOverdueStatus(installment)
-      await installment.save()
-    }
-    
+      if (installment.isModified()) await installment.save()
+    }))
+
     // Get payment transactions
     const transactions = await PaymentTransaction.find({
       paymentPlan: paymentPlan._id,
@@ -206,6 +206,7 @@ export const getAllPaymentPlans = async (req, res, next) => {
     const paymentPlans = await PaymentPlan.find()
       .populate('customer', 'companyName name')
       .sort({ createdAt: -1 })
+      .lean()
 
     // Calculate stats
     const totalAmount = paymentPlans.reduce((sum, plan) => sum + plan.totalAmount, 0)
@@ -700,33 +701,8 @@ export const getCustomerPaymentSummary = async (req, res, next) => {
   try {
     const { customer } = req.params
 
-    console.log('Fetching payment summary for customer:', customer)
-    console.log('Customer ID type:', typeof customer)
-
-    // Debug: Check all payment plans in database
-    const allPaymentPlans = await PaymentPlan.find({})
-    console.log('Total payment plans in database:', allPaymentPlans.length)
-    console.log('All payment plans:', allPaymentPlans.map(p => ({
-      _id: p._id,
-      invoiceType: p.invoiceType,
-      invoiceId: p.invoiceId,
-      customer: p.customer,
-      planType: p.planType,
-      totalAmount: p.totalAmount
-    })))
-
     // Get all payment plans for customer
     const paymentPlans = await PaymentPlan.find({ customer })
-
-    console.log('Found payment plans for customer:', paymentPlans.length)
-    console.log('Payment plans details:', paymentPlans.map(p => ({
-      _id: p._id,
-      invoiceType: p.invoiceType,
-      invoiceId: p.invoiceId,
-      customer: p.customer,
-      planType: p.planType,
-      totalAmount: p.totalAmount
-    })))
 
     const planInvoiceIds = {
       proforma: paymentPlans.filter(p => p.invoiceType === 'proforma').map(p => p.invoiceId),
@@ -752,13 +728,11 @@ export const getCustomerPaymentSummary = async (req, res, next) => {
       paymentPlan: { $in: installmentIds },
     })
 
-    console.log('Found installments:', installments.length)
-
-    // Check overdue status
-    for (const installment of installments) {
-      checkOverdueStatus(installment)
-      await installment.save()
-    }
+    // Check overdue status (parallel, save only changed)
+    await Promise.all(installments.map(async (inst) => {
+      checkOverdueStatus(inst)
+      if (inst.isModified()) await inst.save()
+    }))
 
     // Calculate summary
     const totalInvoiceAmount = paymentPlans.reduce((sum, p) => sum + p.totalAmount, 0)
