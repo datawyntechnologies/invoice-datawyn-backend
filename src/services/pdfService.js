@@ -1071,6 +1071,7 @@ export class PDFService {
     return new Promise((resolve, reject) => {
       try {
         const doc = new PDFKit({ margin: 48, size: 'A4', bufferPages: true, autoFirstPage: false })
+        this.patchProposalTextEncoder(doc)
         const chunks = []
         doc.on('data', chunk => chunks.push(chunk))
         doc.on('end', () => {
@@ -1086,7 +1087,9 @@ export class PDFService {
 
         const safeTheme = this.normalizeProposalPdfTheme(theme)
         this.drawProposalCover(doc, proposal, companySettings, safeTheme)
-        this.drawProposalOverview(doc, proposal, companySettings, safeTheme)
+        if (proposal.projectDescription || proposal.objectives || proposal.proposedSolution) {
+          this.drawProposalOverview(doc, proposal, companySettings, safeTheme)
+        }
         this.drawProposalScope(doc, proposal, safeTheme)
         this.drawProposalDeliverablesAndTechnology(doc, proposal, safeTheme)
         this.drawProposalTimeline(doc, proposal, safeTheme)
@@ -1095,6 +1098,31 @@ export class PDFService {
         doc.end()
       } catch (error) { reject(error) }
     })
+  }
+
+  static sanitizeProposalText(value) {
+    if (value === null || value === undefined) return ''
+    let text = String(value)
+    const replacements = {
+      '₹': 'Rs.', '‐': '-', '‑': '-', '‒': '-', '–': '-', '—': '-', '−': '-',
+      '‘': "'", '’': "'", '‚': "'", '‛': "'",
+      '“': '"', '”': '"', '„': '"', '‟': '"',
+      '•': '-', '·': '-', '▪': '-', '◦': '-', '‣': '-',
+      '…': '...', '™': '', '®': '', '©': '', '°': ' deg',
+      '\u00a0': ' ', '\u200b': '', '\u200c': '', '\u200d': '', '\ufeff': ''
+    }
+    Object.entries(replacements).forEach(([from, to]) => {
+      text = text.split(from).join(to)
+    })
+    return text
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .replace(/[^\x00-\xFF]/g, '')
+  }
+
+  static patchProposalTextEncoder(doc) {
+    const originalText = doc.text.bind(doc)
+    doc.text = (text, ...args) => originalText(this.sanitizeProposalText(text), ...args)
   }
 
   static normalizeProposalPdfTheme(theme = {}) {
@@ -1174,13 +1202,16 @@ export class PDFService {
       ['Valid until', this.formatProposalDate(proposal.validUntil)],
       ['Prepared by', proposal.preparedBy || company?.authorizedSignatory?.name]
     ]
-    let y = 500
+    let y = 430
     details.forEach(([label, value]) => {
       if (!value) return
       doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(8).text(label.toUpperCase(), 48, y)
       doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(11).text(String(value), 48, y + 14)
-      y += 52
+      y += 46
     })
+    doc.rect(48, 730, 499, 1).fill(theme.divider)
+    doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(8)
+      .text(`Valid until ${this.formatProposalDate(proposal.validUntil) || 'on request'} · Confidential`, 48, 748)
   }
 
   static drawProposalOverview(doc, proposal, company, theme) {
@@ -1363,7 +1394,10 @@ export class PDFService {
       doc.fillColor(theme.text).font('Helvetica').fontSize(9).text(text, 48, doc.y + 6, { width: 499, align: 'justify' })
       doc.moveDown(0.5)
     })
-    ;[proposal.termsAndConditions && ['Terms & Conditions', proposal.termsAndConditions], proposal.notes && ['Additional Notes', proposal.notes]].forEach(([label, value]) => {
+    ;[
+      proposal.termsAndConditions ? ['Terms & Conditions', proposal.termsAndConditions] : null,
+      proposal.notes ? ['Additional Notes', proposal.notes] : null
+    ].filter(Boolean).forEach(([label, value]) => {
       if (!value) return
       this.ensureProposalSpace(doc, theme, 80)
       doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(10).text(label.toUpperCase(), 48, doc.y + 8)
