@@ -1121,6 +1121,7 @@ export class PDFService {
       text = text.split(from).join(to)
     })
     return text
+      .replace(/[\x00-\x09\x0B-\x1F\x7F]/g, ' ')
       .normalize('NFKD')
       .replace(/\p{M}/gu, '')
       .replace(/[^\x00-\xFF]/g, '')
