@@ -1070,31 +1070,37 @@ export class PDFService {
   static async generateProposal(proposal, companySettings, theme = {}) {
     return new Promise((resolve, reject) => {
       try {
+        const safeTheme = this.normalizeProposalPdfTheme(theme)
         const doc = new PDFKit({ margin: 48, size: 'A4', bufferPages: true, autoFirstPage: false })
         this.patchProposalTextEncoder(doc)
         const chunks = []
         doc.on('data', chunk => chunks.push(chunk))
-        doc.on('end', () => {
-          const range = doc.bufferedPageRange()
-          for (let i = range.start; i < range.start + range.count; i += 1) {
-            doc.switchToPage(i)
-            this.drawProposalPageChrome(doc, companySettings, proposal, theme, i + 1, range.count)
-          }
-          const buffer = Buffer.concat(chunks)
-          resolve(buffer)
-        })
+        doc.on('end', () => resolve(Buffer.concat(chunks)))
         doc.on('error', reject)
 
-        const safeTheme = this.normalizeProposalPdfTheme(theme)
-        this.drawProposalCover(doc, proposal, companySettings, safeTheme)
-        if (proposal.projectDescription || proposal.objectives || proposal.proposedSolution) {
-          this.drawProposalOverview(doc, proposal, companySettings, safeTheme)
+        const originalAddPage = doc.addPage.bind(doc)
+        doc.addPage = (...args) => {
+          const page = originalAddPage(...args)
+          doc.rect(0, 0, 595.28, 842).fill(safeTheme.background || '#FFFFFF')
+          doc.y = 98
+          doc.x = 48
+          return page
         }
+
+        this.drawProposalCover(doc, proposal, companySettings, safeTheme)
+        this.drawProposalOverview(doc, proposal, companySettings, safeTheme)
         this.drawProposalScope(doc, proposal, safeTheme)
         this.drawProposalDeliverablesAndTechnology(doc, proposal, safeTheme)
         this.drawProposalTimeline(doc, proposal, safeTheme)
         this.drawProposalPricing(doc, proposal, safeTheme)
-        this.drawProposalTerms(doc, proposal, companySettings, safeTheme)
+        this.drawProposalPaymentTerms(doc, proposal, companySettings, safeTheme)
+        this.drawProposalAcceptance(doc, proposal, companySettings, safeTheme)
+
+        const range = doc.bufferedPageRange()
+        for (let i = range.start; i < range.start + range.count; i += 1) {
+          doc.switchToPage(i)
+          this.drawProposalPageChrome(doc, companySettings, proposal, safeTheme, i + 1, range.count)
+        }
         doc.end()
       } catch (error) { reject(error) }
     })
@@ -1129,6 +1135,7 @@ export class PDFService {
     const colors = {
       primary: '#111111', secondary: '#333333', accent: '#111111', background: '#FFFFFF',
       text: '#222222', muted: '#6B7280', divider: '#D1D5DB', light: '#F4F4F4',
+      lightBackground: '#F4F4F4',
       coverBackground: '#111111', coverText: '#FFFFFF', coverMuted: '#D1D5DB'
     }
     const config = theme.config || theme
@@ -1140,94 +1147,267 @@ export class PDFService {
   }
 
   static drawProposalPageChrome(doc, company, proposal, theme, pageNumber, pageCount) {
-    if (pageNumber === 1 || theme.showPageNumbers === false) return
-    const y = 792
+    if (pageNumber === 1) return
     const c = theme
-    if (theme.footerStyle !== 'minimal') {
-      doc.rect(0, y, 595.28, 40).fill(c.background)
-      doc.rect(0, y, 595.28, 1).fill(c.divider)
+    const safeCompany = company || {}
+
+    // Header: small logo + company name, proposal label on the right
+    const logo = this.proposalLogoPath(safeCompany)
+    let nameX = 48
+    if (c.showLogo !== false && logo) {
+      try {
+        doc.image(logo, 48, 30, { width: 30, height: 15, fit: [30, 15] })
+        nameX = 84
+      } catch (_) {}
     }
-    doc.fillColor(c.muted).font('Helvetica').fontSize(8)
-      .text(company?.companyName || 'Datawyn Technologies', 48, y + 12)
-    doc.text(proposal?.proposalNumber || '', 300, y + 12, { width: 190, align: 'right' })
-    if (theme.showPageNumbers !== false) {
-      doc.text(`${pageNumber} / ${pageCount}`, 480, y + 12, { width: 67, align: 'right' })
-    }
+    doc.fillColor(c.primary || '#111111').font('Helvetica-Bold').fontSize(8.5)
+      .text(safeCompany.companyName || 'Datawyn Technologies', nameX, 32, { width: 280 })
+    doc.fillColor(c.muted).font('Helvetica').fontSize(7)
+      .text('PROJECT PROPOSAL', 360, 34, { width: 187, align: 'right' })
+    doc.fillColor(c.primary).font('Helvetica-Bold').fontSize(8)
+      .text(proposal?.proposalNumber || '', 360, 45, { width: 187, align: 'right' })
+    doc.moveTo(48, 62).lineTo(547, 62).lineWidth(0.7).stroke(c.divider || '#E5E5E5')
+
+    // Footer: confidentiality, validity and page numbering
+    doc.page.margins.bottom = 8
+    const fy = 786
+    doc.moveTo(48, fy).lineTo(547, fy).lineWidth(0.7).stroke(c.divider || '#E5E5E5')
+    doc.fillColor(c.muted).font('Helvetica').fontSize(7.5)
+      .text('Confidential', 48, fy + 8)
+    const validUntil = this.formatProposalDate(proposal?.validUntil)
+    const rightParts = [proposal?.proposalNumber, validUntil ? `Valid until ${validUntil}` : '', `Page ${pageNumber} of ${pageCount}`].filter(Boolean)
+    doc.text(rightParts.join('  ·  '), 250, fy + 8, { width: 297, align: 'right' })
   }
 
   static proposalNewPage(doc, theme) {
     doc.addPage()
-    doc.rect(0, 0, 595.28, 842).fill(theme.background)
   }
 
   static ensureProposalSpace(doc, theme, needed = 90) {
-    if (doc.y + needed > 740) this.proposalNewPage(doc, theme)
+    if (doc.y + needed > 776) {
+      this.proposalNewPage(doc, theme)
+      return true
+    }
+    return false
   }
 
   static drawProposalHeading(doc, theme, title, subtitle = '') {
-    this.ensureProposalSpace(doc, theme, subtitle ? 100 : 70)
-    const y = doc.y + 18
-    doc.rect(48, y, 499, 2).fill(theme.primary)
+    this.ensureProposalSpace(doc, theme, subtitle ? 110 : 80)
+    const y = doc.y + 14
+    doc.rect(48, y + 3, 30, 3).fill(theme.accent || theme.primary)
+    const headingText = theme.headingStyle === 'title' ? title : title.toUpperCase()
     doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(16)
-      .text(title.toUpperCase(), 48, y + 12)
+      .text(headingText, 88, y, { width: 459 })
+    let bottom = y + 24
     if (subtitle) {
-      doc.fillColor(theme.muted).font('Helvetica').fontSize(9).text(subtitle, 48, doc.y + 3, { width: 499 })
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(8.5)
+        .text(subtitle, 48, bottom, { width: 499 })
+      bottom += 15
     }
-    doc.y += subtitle ? 62 : 46
+    doc.y = bottom + 16
+  }
+
+  static drawProposalSubheading(doc, theme, text) {
+    this.ensureProposalSpace(doc, theme, 80)
+    const y = doc.y + 10
+    doc.rect(48, y + 2, 18, 2).fill(theme.accent || theme.primary)
+    doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(9)
+      .text(String(text).toUpperCase(), 76, y - 2, { width: 471 })
+    doc.y = y + 18
+  }
+
+  static proposalTextHeight(doc, text, width, size = 9.5, font = 'Helvetica') {
+    doc.font(font).fontSize(size)
+    return doc.heightOfString(String(text ?? ''), { width })
+  }
+
+  static drawProposalText(doc, theme, text, options = {}) {
+    const {
+      x = 48, width = 499, size = 9.5, font = 'Helvetica',
+      color, align = 'justify', gapAfter = 10, indent = 0
+    } = options
+    const paragraphs = String(text ?? '').split(/\r?\n/).map(p => p.trim()).filter(Boolean)
+    paragraphs.forEach(paragraph => {
+      let remaining = paragraph
+      while (remaining.length) {
+        if (776 - doc.y < 36) this.proposalNewPage(doc, theme)
+        const available = 776 - doc.y - 6
+        let lo = 1
+        let hi = remaining.length
+        let best = 0
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1
+          const h = this.proposalTextHeight(doc, remaining.slice(0, mid), width - indent, size, font)
+          if (h <= available) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        if (!best) {
+          this.proposalNewPage(doc, theme)
+          continue
+        }
+        let cut = best
+        if (cut < remaining.length) {
+          const spaceIndex = remaining.lastIndexOf(' ', cut)
+          if (spaceIndex > cut * 0.5) cut = spaceIndex
+        }
+        const chunk = remaining.slice(0, cut)
+        remaining = remaining.slice(cut).replace(/^\s+/, '')
+        doc.font(font).fontSize(size).fillColor(color || theme.text || '#222222')
+        doc.text(chunk, x + indent, doc.y, { width: width - indent, align })
+      }
+      doc.y += gapAfter
+    })
+  }
+
+  static proposalSpacedCaps(text) {
+    return String(text || '').replace(/\s+/g, '  ').split('').join(' ')
   }
 
   static drawProposalCover(doc, proposal, company, theme) {
     doc.addPage()
-    doc.rect(0, 0, 595.28, 842).fill(theme.coverBackground)
+    doc.rect(0, 0, 595.28, 842).fill(theme.coverBackground || '#111111')
+    const coverText = theme.coverText || '#FFFFFF'
+    const coverMuted = theme.coverMuted || '#D1D5DB'
+
+    // Brand block: logo + company name + tagline
     const logo = this.proposalLogoPath(company)
-    let logoLoaded = false
+    let nameX = 48
     if (theme.showLogo !== false && logo) {
       try {
-        doc.image(logo, 48, 48, { width: 110, height: 50, fit: [110, 50] })
-        logoLoaded = true
+        doc.image(logo, 48, 54, { width: 104, height: 46, fit: [104, 46] })
+        nameX = 164
       } catch (_) {}
     }
-    doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(13)
-      .text(company?.companyName || 'Datawyn Technologies', logoLoaded ? 170 : 48, 55)
-    doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(9)
-      .text('Digital Solutions That Build and Scale', logoLoaded ? 170 : 48, 72)
-    doc.rect(48, 150, 499, 1).fill(theme.divider)
-    doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(10).text('PROJECT PROPOSAL', 48, 230)
-    doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(30).text(proposal.projectTitle || 'Project Proposal', 48, 252, { width: 499 })
-    if (proposal.projectSubtitle) doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(12).text(proposal.projectSubtitle, 48, doc.y + 10, { width: 499 })
-    const details = [
-      ['Prepared for', proposal.customerSnapshot?.companyName],
-      ['Proposal number', proposal.proposalNumber],
-      ['Proposal date', this.formatProposalDate(proposal.proposalDate)],
-      ['Valid until', this.formatProposalDate(proposal.validUntil)],
-      ['Prepared by', proposal.preparedBy || company?.authorizedSignatory?.name]
-    ]
-    let y = 430
-    details.forEach(([label, value]) => {
-      if (!value) return
-      doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(8).text(label.toUpperCase(), 48, y)
-      doc.fillColor(theme.coverText).font('Helvetica-Bold').fontSize(11).text(String(value), 48, y + 14)
-      y += 46
+    const nameWidth = 547 - nameX
+    doc.fillColor(coverText).font('Helvetica-Bold').fontSize(15)
+      .text(company?.companyName || 'Datawyn Technologies', nameX, 58, { width: nameWidth })
+    doc.fillColor(coverMuted).font('Helvetica').fontSize(9)
+      .text('Digital Solutions That Build and Scale', nameX, 80, { width: nameWidth })
+
+    doc.moveTo(48, 128).lineTo(547, 128).lineWidth(0.7).stroke(coverMuted)
+
+    // Hero: kicker, project title, subtitle
+    doc.fillColor(coverMuted).font('Helvetica').fontSize(10)
+      .text(this.proposalSpacedCaps('Project Proposal'), 48, 168)
+    let y = 192
+    doc.fillColor(coverText).font('Helvetica-Bold').fontSize(30)
+      .text(proposal.projectTitle || 'Project Proposal', 48, y, { width: 499 })
+    y = doc.y + 8
+    if (proposal.projectSubtitle) {
+      doc.fillColor(coverMuted).font('Helvetica').fontSize(12)
+        .text(proposal.projectSubtitle, 48, y, { width: 499 })
+      y = doc.y + 6
+    }
+
+    // Prepared-for block
+    const customer = proposal.customerSnapshot || {}
+    y = Math.max(y + 30, 400)
+    doc.fillColor(coverMuted).font('Helvetica').fontSize(8)
+      .text(this.proposalSpacedCaps('Prepared For'), 48, y)
+    y += 16
+    doc.fillColor(coverText).font('Helvetica-Bold').fontSize(17)
+      .text(customer.companyName || 'Client', 48, y, { width: 499 })
+    y = doc.y + 6
+    const addressSource = customer.billingAddress || customer.address
+    const addressText = typeof addressSource === 'string'
+      ? addressSource
+      : [addressSource?.street, addressSource?.city, addressSource?.state, addressSource?.pincode].filter(Boolean).join(', ')
+    const clientLines = [
+      customer.contactPerson,
+      [customer.email, customer.phone].filter(Boolean).join('  ·  '),
+      addressText
+    ].filter(Boolean)
+    clientLines.forEach(line => {
+      doc.fillColor(coverMuted).font('Helvetica').fontSize(9).text(line, 48, y, { width: 499 })
+      y = doc.y + 3
     })
-    doc.rect(48, 730, 499, 1).fill(theme.divider)
-    doc.fillColor(theme.coverMuted).font('Helvetica').fontSize(8)
-      .text(`Valid until ${this.formatProposalDate(proposal.validUntil) || 'on request'} · Confidential`, 48, 748)
+
+    // Metadata grid: two columns of label/value pairs
+    const metaY = Math.min(Math.max(y + 26, 520), 640)
+    const meta = [
+      ['Proposal Number', proposal.proposalNumber],
+      ['Proposal Date', this.formatProposalDate(proposal.proposalDate)],
+      ['Valid Until', this.formatProposalDate(proposal.validUntil)],
+      ['Prepared By', proposal.preparedBy || company?.authorizedSignatory?.name]
+    ].filter(([, value]) => value)
+    meta.forEach(([label, value], index) => {
+      const col = index % 2
+      const row = Math.floor(index / 2)
+      const mx = 48 + col * 260
+      const my = metaY + row * 52
+      doc.fillColor(coverMuted).font('Helvetica').fontSize(7.5)
+        .text(this.proposalSpacedCaps(label), mx, my, { width: 240 })
+      doc.fillColor(coverText).font('Helvetica-Bold').fontSize(11)
+        .text(String(value), mx, my + 13, { width: 240 })
+    })
+
+    // Bottom bar
+    doc.moveTo(48, 762).lineTo(547, 762).lineWidth(0.7).stroke(coverMuted)
+    doc.fillColor(coverMuted).font('Helvetica').fontSize(8)
+      .text('Confidential', 48, 774)
+    const validUntil = this.formatProposalDate(proposal.validUntil)
+    doc.text(validUntil ? `Valid until ${validUntil}` : '', 250, 774, { width: 297, align: 'right' })
   }
 
   static drawProposalOverview(doc, proposal, company, theme) {
+    const hasContent = proposal.projectDescription || proposal.objectives || proposal.proposedSolution
+    if (!hasContent) return
     this.proposalNewPage(doc, theme)
     this.drawProposalHeading(doc, theme, 'Project Overview')
+
+    // Client snapshot card
+    const customer = proposal.customerSnapshot || {}
+    const addressSource = customer.billingAddress || customer.address
+    const addressText = typeof addressSource === 'string'
+      ? addressSource
+      : [addressSource?.street, addressSource?.city, addressSource?.state, addressSource?.pincode].filter(Boolean).join(', ')
+    const clientLines = [
+      customer.contactPerson,
+      [customer.email, customer.phone].filter(Boolean).join('  ·  '),
+      customer.gstin ? `GSTIN: ${customer.gstin}` : '',
+      addressText
+    ].filter(Boolean)
+    if (customer.companyName || clientLines.length) {
+      const companyH = customer.companyName ? this.proposalTextHeight(doc, customer.companyName, 475, 11, 'Helvetica-Bold') : 0
+      const lineHs = clientLines.map(line => this.proposalTextHeight(doc, line, 475, 8, 'Helvetica'))
+      const boxH = 16 + (customer.companyName ? companyH + 6 : 0) + lineHs.reduce((sum, h) => sum + h + 3, 0) + 8
+      this.ensureProposalSpace(doc, theme, boxH + 10)
+      const y = doc.y + 4
+      doc.rect(48, y, 499, boxH).fill(theme.lightBackground).lineWidth(0.6).stroke(theme.divider)
+      let cy = y + 12
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(7.5)
+        .text(this.proposalSpacedCaps('Prepared For'), 60, cy)
+      cy += 15
+      if (customer.companyName) {
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(11)
+          .text(customer.companyName, 60, cy, { width: 475 })
+        cy = doc.y + 3
+      }
+      clientLines.forEach((line, index) => {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(line, 60, cy, { width: 475 })
+        cy = doc.y + 3
+      })
+      doc.y = y + boxH + 14
+    }
+
     const sections = [
-      ['Project description', proposal.projectDescription],
-      ['Project objectives', proposal.objectives],
-      ['Proposed solution', proposal.proposedSolution]
+      ['Project Description', proposal.projectDescription],
+      ['Project Objectives', proposal.objectives],
+      ['Proposed Solution', proposal.proposedSolution]
     ]
     sections.forEach(([label, value]) => {
       if (!value) return
-      this.ensureProposalSpace(doc, theme, 70)
-      doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(10).text(label.toUpperCase(), 48, doc.y + 8)
-      doc.fillColor(theme.text).font('Helvetica').fontSize(9.5).text(value, 48, doc.y + 6, { width: 499, align: 'justify' })
-      doc.moveDown(0.8)
+      this.drawProposalSubheading(doc, theme, label)
+      if (label === 'Project Objectives') {
+        const objectives = String(value).split(/\r?\n/).map(o => o.trim()).filter(Boolean)
+        if (objectives.length > 1) {
+          objectives.forEach((objective, index) => {
+            this.drawProposalText(doc, theme, `${index + 1}.  ${objective}`, { size: 9.5, gapAfter: 5 })
+          })
+          doc.y += 5
+          return
+        }
+      }
+      this.drawProposalText(doc, theme, value, { size: 9.5, gapAfter: 12 })
     })
     this.drawProposalSectionDivider(doc, theme)
   }
@@ -1235,61 +1415,129 @@ export class PDFService {
   static drawProposalScope(doc, proposal, theme) {
     const items = proposal.scopeOfWork || []
     if (!items.length) return
-    this.drawProposalHeading(doc, theme, 'Scope of Work', `${items.length} workstreams included`)
+    this.proposalNewPage(doc, theme)
+    this.drawProposalHeading(doc, theme, 'Scope of Work', `${items.length} workstream${items.length === 1 ? '' : 's'} included`)
+
     items.forEach((item, index) => {
-      const bullets = item.bulletPoints || []
-      const estimated = 105 + bullets.length * 17
-      this.ensureProposalSpace(doc, theme, Math.min(estimated, 240))
-      const start = doc.y
-      doc.rect(48, start, 499, estimated).fill(theme.lightBackground)
-      doc.circle(68, start + 18, 10).fill(theme.primary)
-      doc.fillColor(theme.background).font('Helvetica-Bold').fontSize(9).text(String(index + 1), 64, start + 14, { width: 8, align: 'center' })
-      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(11).text(item.title || 'Scope item', 88, start + 10, { width: 440 })
-      let y = start + 36
-      if (item.description) {
-        doc.fillColor(theme.text).font('Helvetica').fontSize(9).text(item.description, 88, y, { width: 440, align: 'justify' })
-        y = doc.y + 8
+      const title = item.title || 'Scope item'
+      const description = item.description || ''
+      const bullets = (item.bulletPoints || []).filter(Boolean)
+
+      const titleH = this.proposalTextHeight(doc, title, 430, 11, 'Helvetica-Bold')
+      const descH = description ? this.proposalTextHeight(doc, description, 430, 9, 'Helvetica') + 6 : 0
+      const bulletHs = bullets.map(point => this.proposalTextHeight(doc, point, 412, 8.5, 'Helvetica') + 4)
+      const bulletsH = bulletHs.reduce((sum, h) => sum + h, 0)
+      const blockH = titleH + descH + bulletsH + 26
+
+      this.ensureProposalSpace(doc, theme, blockH + 18)
+      const top = doc.y + 8
+
+      // Numbered marker
+      doc.circle(60, top + 10, 10).fill(theme.primary)
+      doc.fillColor(theme.background || '#FFFFFF').font('Helvetica-Bold').fontSize(9)
+        .text(String(index + 1), 52, top + 5.5, { width: 16, align: 'center' })
+
+      // Title
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(11)
+        .text(title, 84, top, { width: 430 })
+
+      // Description
+      let cursor = top + titleH + (description ? 6 : 0)
+      if (description) {
+        doc.fillColor(theme.text).font('Helvetica').fontSize(9)
+          .text(description, 84, cursor, { width: 430, align: 'justify' })
+        cursor = doc.y + 4
       }
-      bullets.forEach(point => {
-        doc.fillColor(theme.muted).font('Helvetica').fontSize(8.5).text(`•  ${point}`, 88, y, { width: 440 })
-        y += 16
+
+      // Bullet points
+      bullets.forEach((point, bulletIndex) => {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(8.5)
+          .text(`-  ${point}`, 88, cursor + 2, { width: 412 })
+        cursor += bulletHs[bulletIndex]
       })
-      doc.y = start + estimated + 12
+
+      const bottom = Math.max(cursor + 8, top + blockH - 8)
+      doc.moveTo(48, bottom).lineTo(547, bottom).lineWidth(0.5).stroke(theme.divider)
+      doc.y = bottom + 14
     })
     this.drawProposalSectionDivider(doc, theme)
   }
 
   static drawProposalDeliverablesAndTechnology(doc, proposal, theme) {
     const deliverables = proposal.deliverables || []
-    const technologies = proposal.technologyStack || []
+    const technologies = (proposal.technologyStack || []).filter(Boolean)
     if (!deliverables.length && !technologies.length) return
-    if (doc.y > 560) this.proposalNewPage(doc, theme)
+    this.proposalNewPage(doc, theme)
     this.drawProposalHeading(doc, theme, 'Deliverables & Technology', 'Included outputs and selected technology stack')
+
     deliverables.forEach((item, index) => {
-      this.ensureProposalSpace(doc, theme, 80)
-      const start = doc.y
-      doc.rect(48, start, 499, 65).fill(theme.lightBackground)
-      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10).text(`${String(index + 1).padStart(2, '0')}`, 60, start + 18)
-      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10).text(item.name || 'Deliverable', 92, start + 10, { width: 430 })
-      doc.fillColor(theme.text).font('Helvetica').fontSize(8.5).text(item.description || '', 92, start + 29, { width: 430 })
-      if (item.quantity) doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(`Quantity: ${item.quantity}`, 92, start + 47)
-      doc.y = start + 76
-    })
-    if (technologies.length) {
-      this.ensureProposalSpace(doc, theme, 90)
-      doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(10).text('TECHNOLOGY STACK', 48, doc.y + 8)
-      const rows = Math.ceil(technologies.length / 3)
-      for (let row = 0; row < rows; row += 1) {
-        const y = doc.y + 22
-        for (let col = 0; col < 3; col += 1) {
-          const index = row * 3 + col
-          if (!technologies[index]) continue
-          const x = 48 + col * 169
-          doc.rect(x, y, 155, 34).fill(theme.background).lineWidth(0.7).stroke(theme.divider)
-          doc.fillColor(theme.text).font('Helvetica-Bold').fontSize(9).text(technologies[index], x + 10, y + 12, { width: 135, align: 'center' })
-        }
-        doc.y = y + 44
+      const name = item.name || 'Deliverable'
+      const description = item.description || ''
+      const notes = item.notes || ''
+      const nameH = this.proposalTextHeight(doc, name, 320, 10.5, 'Helvetica-Bold')
+      const descH = description ? this.proposalTextHeight(doc, description, 320, 8.5, 'Helvetica') + 4 : 0
+      const notesH = notes ? this.proposalTextHeight(doc, notes, 320, 8, 'Helvetica') + 4 : 0
+      const metaH = item.quantity ? 26 : 0
+      const cardH = Math.max(46, 16 + nameH + descH + notesH + metaH + 12)
+
+      this.ensureProposalSpace(doc, theme, cardH + 12)
+      const top = doc.y + 6
+      doc.rect(48, top, 499, cardH).fill(theme.lightBackground)
+
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(13)
+        .text(String(index + 1).padStart(2, '0'), 60, top + 14, { width: 24 })
+
+      let cy = top + 14
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10.5)
+        .text(name, 92, cy, { width: 320 })
+      cy = doc.y + 3
+      if (description) {
+        doc.fillColor(theme.text).font('Helvetica').fontSize(8.5)
+          .text(description, 92, cy, { width: 320, align: 'justify' })
+        cy = doc.y + 2
       }
+      if (notes) {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(8)
+          .text(`Notes: ${notes}`, 92, cy, { width: 320 })
+        cy = doc.y + 2
+      }
+      if (item.quantity) {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(7.5)
+          .text('QUANTITY', 415, top + 14, { width: 110 })
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(11)
+          .text(String(item.quantity), 415, top + 26, { width: 110, align: 'right' })
+      }
+      doc.moveTo(48, top + cardH).lineTo(547, top + cardH).lineWidth(0.5).stroke(theme.divider)
+      doc.y = top + cardH + 10
+    })
+
+    if (technologies.length) {
+      const cols = 3
+      const gap = 12
+      const chipW = (499 - gap * (cols - 1)) / cols
+      const chipRows = []
+      for (let start = 0; start < technologies.length; start += cols) {
+        const rowItems = technologies.slice(start, start + cols)
+        const chipHs = rowItems.map(tech => Math.max(30, this.proposalTextHeight(doc, tech, chipW - 20, 8.5, 'Helvetica-Bold') + 16))
+        chipRows.push({ items: rowItems, chipHs, h: Math.max(...chipHs) + gap })
+      }
+      // Keep the subheading attached to the first chip row
+      if (doc.y + 46 + (chipRows[0]?.h || 0) > 776) this.proposalNewPage(doc, theme)
+      this.drawProposalSubheading(doc, theme, 'Technology Stack')
+      chipRows.forEach(row => {
+        this.ensureProposalSpace(doc, theme, row.h + 8)
+        const rowY = doc.y + 4
+        row.items.forEach((tech, col) => {
+          const chipX = 48 + col * (chipW + gap)
+          const chipH = row.chipHs[col]
+          const textH = this.proposalTextHeight(doc, tech, chipW - 20, 8.5, 'Helvetica-Bold')
+          doc.rect(chipX, rowY, chipW, chipH).fill(theme.background).lineWidth(0.7).stroke(theme.divider)
+          doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(8.5)
+            .text(tech, chipX + 10, rowY + (chipH - textH) / 2, { width: chipW - 20, align: 'center' })
+        })
+        doc.y = rowY + row.h
+      })
+      doc.y += 8
     }
     this.drawProposalSectionDivider(doc, theme)
   }
@@ -1299,122 +1547,334 @@ export class PDFService {
     const milestones = timeline.milestones || []
     const hasTimeline = timeline.startDate || timeline.estimatedCompletionDate || timeline.duration || milestones.length
     if (!hasTimeline) return
+    this.proposalNewPage(doc, theme)
     this.drawProposalHeading(doc, theme, 'Project Timeline', 'Delivery milestones and expected dates')
-    const summary = [
-      ['Start date', this.formatProposalDate(timeline.startDate)],
-      ['Completion', this.formatProposalDate(timeline.estimatedCompletionDate)],
-      ['Duration', timeline.duration]
+
+    // Summary stat boxes
+    const stats = [
+      ['Start Date', this.formatProposalDate(timeline.startDate)],
+      ['Est. Completion', this.formatProposalDate(timeline.estimatedCompletionDate)],
+      ['Total Duration', timeline.duration]
     ].filter(([, value]) => value)
-    const cols = Math.max(1, summary.length)
-    const width = 499 / cols
-    summary.forEach(([label, value], index) => {
-      const x = 48 + index * width
-      doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(label.toUpperCase(), x, doc.y + 4)
-      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10).text(value, x, doc.y + 18)
-    })
-    doc.y += 50
+    if (stats.length) {
+      this.ensureProposalSpace(doc, theme, 60)
+      const statW = 499 / stats.length
+      const statY = doc.y + 6
+      stats.forEach(([label, value], index) => {
+        const x = 48 + index * statW
+        doc.rect(x, statY, statW - 8, 42).fill(theme.lightBackground)
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(7)
+          .text(this.proposalSpacedCaps(label), x + 10, statY + 8, { width: statW - 28 })
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10)
+          .text(String(value), x + 10, statY + 20, { width: statW - 28 })
+      })
+      doc.y = statY + 56
+    }
+
+    // Vertical milestone timeline
+    const lineX = 62
+    let previousCircleBottom = null
     milestones.forEach((milestone, index) => {
-      this.ensureProposalSpace(doc, theme, 82)
-      const start = doc.y
-      doc.rect(48, start, 499, 68).fill(theme.lightBackground)
-      doc.circle(70, start + 34, 13).fill(theme.primary)
-      doc.fillColor(theme.background).font('Helvetica-Bold').fontSize(9).text(String(index + 1), 65, start + 29, { width: 10, align: 'center' })
-      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10).text(milestone.title || 'Milestone', 94, start + 10, { width: 300 })
-      doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(this.formatProposalDate(milestone.expectedDate), 94, start + 29)
-      if (milestone.duration) doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(milestone.duration, 420, start + 29, { width: 110, align: 'right' })
-      if (milestone.description) doc.fillColor(theme.text).font('Helvetica').fontSize(8.5).text(milestone.description, 94, start + 43, { width: 430 })
-      doc.y = start + 80
+      const title = milestone.title || 'Milestone'
+      const description = milestone.description || ''
+      const dateText = this.formatProposalDate(milestone.expectedDate)
+      const durationText = milestone.duration || ''
+      const metaText = [dateText, durationText].filter(Boolean).join('  ·  ')
+
+      const titleH = this.proposalTextHeight(doc, title, 335, 10.5, 'Helvetica-Bold')
+      const descH = description ? this.proposalTextHeight(doc, description, 459, 8.5, 'Helvetica') + 5 : 0
+      const metaH = metaText ? 13 : 0
+      const rowH = Math.max(48, titleH + descH + 22)
+
+      const broke = this.ensureProposalSpace(doc, theme, rowH + 10)
+      if (broke) previousCircleBottom = null
+      const top = doc.y + 6
+      const circleY = top + 15
+
+      // Connecting line from previous milestone
+      if (previousCircleBottom !== null) {
+        doc.moveTo(lineX, previousCircleBottom).lineTo(lineX, circleY - 11).lineWidth(1).stroke(theme.divider)
+      }
+
+      // Numbered node
+      doc.circle(lineX, circleY, 11).fill(theme.primary)
+      doc.fillColor(theme.background || '#FFFFFF').font('Helvetica-Bold').fontSize(8.5)
+        .text(String(index + 1), lineX - 8, circleY - 5, { width: 16, align: 'center' })
+
+      // Title and meta
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10.5)
+        .text(title, 88, top + 4, { width: 335 })
+      if (metaText) {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(8)
+          .text(metaText, 430, top + 8, { width: 110, align: 'right' })
+      }
+      if (description) {
+        doc.fillColor(theme.text).font('Helvetica').fontSize(8.5)
+          .text(description, 88, top + 4 + titleH + 5, { width: 459, align: 'justify' })
+      }
+
+      previousCircleBottom = circleY + 11
+      doc.y = top + rowH
     })
+    doc.y += 8
     this.drawProposalSectionDivider(doc, theme)
   }
 
   static drawProposalPricing(doc, proposal, theme) {
     const items = proposal.items || []
+    this.proposalNewPage(doc, theme)
     this.drawProposalHeading(doc, theme, 'Products / Services & Pricing', 'Detailed commercial summary')
-    this.ensureProposalSpace(doc, theme, 130)
-    const widths = [22, 145, 140, 45, 74, 73]
-    let x = 48
-    doc.rect(48, doc.y, 499, 28).fill(theme.primary)
-    doc.fillColor(theme.background).font('Helvetica-Bold').fontSize(8)
-    ;['S.No', 'Product / Service', 'Description', 'Qty', 'Unit Price', 'Total'].forEach((header, i) => {
-      doc.text(header, i === 0 ? 56 : x + 8, doc.y + 9, { width: i === 1 ? widths[i] - 16 : widths[i] - 16, align: i >= 3 ? 'right' : 'left' })
-      x += widths[i]
-    })
-    let rowY = doc.y + 28
-    items.forEach((item, index) => {
-      const name = item.isCustom ? item.customName : item.productSnapshot?.name || 'Product / Service'
-      const description = item.isCustom ? item.customDescription : item.productSnapshot?.description || ''
-      const height = Math.max(38, 24 + Math.ceil(description.length / 55) * 10)
-      if (rowY + height > 740) {
-        this.proposalNewPage(doc, theme)
-        this.drawProposalHeading(doc, theme, 'Pricing continued')
-        rowY = doc.y + 10
-      }
-      doc.rect(48, rowY, 499, height).fill(index % 2 ? theme.lightBackground : theme.background).lineWidth(0.5).stroke(theme.divider)
-      x = 48
-      const values = [index + 1, name, description, item.quantity, this.formatProposalCurrency(item.rate), this.formatProposalCurrency(item.total)]
-      values.forEach((value, i) => {
-        doc.fillColor(i === 1 || i === 2 ? theme.text : theme.secondary).font('Helvetica').fontSize(7.5)
-          .text(String(value || ''), i === 0 ? 56 : x + 8, rowY + 9, { width: widths[i] - 16, align: i >= 3 ? 'right' : 'left' })
-        x += widths[i]
+
+    // Column layout: S.No | Product / Service | Description | Qty | Unit Price | Total
+    const widths = [24, 150, 155, 34, 72, 64]
+    const colX = []
+    let accX = 48
+    widths.forEach(w => { colX.push(accX); accX += w })
+
+    const drawTableHeader = () => {
+      const headerY = doc.y
+      doc.rect(48, headerY, 499, 30).fill(theme.primary)
+      const headers = ['S.No', 'Product / Service', 'Description', 'Qty', 'Unit Price', 'Total']
+      headers.forEach((header, i) => {
+        const isNumeric = i >= 3
+        doc.fillColor(theme.background || '#FFFFFF').font('Helvetica-Bold').fontSize(8)
+        doc.text(header.toUpperCase(), colX[i] + 7, headerY + 10, { width: widths[i] - 14, align: isNumeric ? 'right' : 'left' })
       })
-      rowY += height
+      return headerY + 30
+    }
+
+    this.ensureProposalSpace(doc, theme, 90)
+    let rowY = drawTableHeader()
+
+    const preparedItems = items.map((item, index) => {
+      const name = item.isCustom ? item.customName : item.productSnapshot?.name || 'Product / Service'
+      const description = String(item.isCustom ? item.customDescription : item.productSnapshot?.description || '').slice(0, 600)
+      const nameH = this.proposalTextHeight(doc, name || 'Product / Service', widths[1] - 16, 8.5, 'Helvetica-Bold')
+      const descH = description ? this.proposalTextHeight(doc, description, widths[2] - 16, 7.5, 'Helvetica') : 0
+      const rowH = Math.max(32, nameH + descH + 18)
+      return { item, index, name: name || 'Product / Service', description, nameH, rowH }
     })
+
+    if (!preparedItems.length) {
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(9)
+        .text('No priced items in this proposal.', 48, rowY + 10, { width: 499 })
+      doc.y = rowY + 34
+    }
+
+    preparedItems.forEach(({ item, index, name, description, nameH, rowH }) => {
+      if (rowY + rowH > 776) {
+        this.proposalNewPage(doc, theme)
+        rowY = drawTableHeader()
+      }
+      doc.rect(48, rowY, 499, rowH).fill(index % 2 ? theme.lightBackground : (theme.background || '#FFFFFF'))
+      doc.fillColor(theme.secondary).font('Helvetica').fontSize(8)
+        .text(String(index + 1), colX[0] + 7, rowY + 11, { width: widths[0] - 14 })
+      doc.fillColor(theme.text).font('Helvetica-Bold').fontSize(8.5)
+        .text(name, colX[1] + 8, rowY + 9, { width: widths[1] - 16 })
+      if (description) {
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(7.5)
+          .text(description, colX[2] + 8, rowY + 9 + nameH + 2, { width: widths[2] - 16 })
+      }
+      doc.fillColor(theme.secondary).font('Helvetica').fontSize(8)
+        .text(String(item.quantity ?? 1), colX[3] + 7, rowY + 11, { width: widths[3] - 14, align: 'right' })
+        .text(this.formatProposalCurrency(item.rate), colX[4] + 7, rowY + 11, { width: widths[4] - 14, align: 'right' })
+        .font('Helvetica-Bold').fillColor(theme.primary)
+        .text(this.formatProposalCurrency(item.total ?? (Number(item.rate || 0) * Number(item.quantity || 1))), colX[5] + 7, rowY + 11, { width: widths[5] - 14, align: 'right' })
+      doc.moveTo(48, rowY + rowH).lineTo(547, rowY + rowH).lineWidth(0.5).stroke(theme.divider)
+      rowY += rowH
+    })
+
+    // Financial summary panel
     const discount = Number(proposal.itemDiscount || 0) + Number(proposal.invoiceDiscount || 0)
-    const taxes = [['CGST', proposal.cgst], ['SGST', proposal.sgst], ['IGST', proposal.igst], ['Other tax', Number(proposal.totalTax || 0) - Number(proposal.cgst || 0) - Number(proposal.sgst || 0) - Number(proposal.igst || 0)]]
+    const otherTax = Number(proposal.totalTax || 0) - Number(proposal.cgst || 0) - Number(proposal.sgst || 0) - Number(proposal.igst || 0)
+    const roundOff = Number(proposal.roundOff || 0)
     const summaryRows = [
       ['Subtotal', this.formatProposalCurrency(proposal.subtotal)],
       ...(discount > 0 ? [['Discount', `- ${this.formatProposalCurrency(discount)}`]] : []),
-      ...taxes.filter(([, value]) => Number(value) > 0).map(([label, value]) => [label, this.formatProposalCurrency(value)]),
-      ['Grand Total', this.formatProposalCurrency(proposal.grandTotal)]
+      ...(Number(proposal.cgst) > 0 ? [['CGST', this.formatProposalCurrency(proposal.cgst)]] : []),
+      ...(Number(proposal.sgst) > 0 ? [['SGST', this.formatProposalCurrency(proposal.sgst)]] : []),
+      ...(Number(proposal.igst) > 0 ? [['IGST', this.formatProposalCurrency(proposal.igst)]] : []),
+      ...(otherTax > 0.005 ? [['Other Tax', this.formatProposalCurrency(otherTax)]] : []),
+      ...(Math.abs(roundOff) > 0.005 ? [['Round Off', this.formatProposalCurrency(roundOff)]] : [])
     ]
-    this.ensureProposalSpace(doc, theme, 130 + summaryRows.length * 24)
-    let summaryY = rowY + 16
-    summaryRows.forEach(([label, value], index) => {
-      const isTotal = index === summaryRows.length - 1
-      doc.fillColor(isTotal ? theme.primary : theme.text).font(isTotal ? 'Helvetica-Bold' : 'Helvetica').fontSize(isTotal ? 11 : 9)
-        .text(label, 330, summaryY, { width: 120 })
-      doc.text(value, 455, summaryY, { width: 85, align: 'right' })
-      summaryY += isTotal ? 30 : 22
-    })
-    if (proposal.amountInWords) {
-      doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(`Amount in words: ${proposal.amountInWords}`, 48, summaryY + 4, { width: 300 })
+    const wordsText = proposal.amountInWords ? String(proposal.amountInWords) : ''
+    const wordsMeasure = wordsText ? this.proposalTextHeight(doc, wordsText, 193, 8, 'Helvetica') : 0
+    const rowsH = summaryRows.length * 19
+    const stripH = 44
+    const wordsBlockH = wordsText ? 12 + wordsMeasure + 10 : 0
+    const panelH = 18 + rowsH + 10 + stripH + (wordsBlockH ? 10 + wordsBlockH : 0) + 10
+
+    if (rowY + 20 + panelH > 776) {
+      this.proposalNewPage(doc, theme)
+      this.drawProposalSubheading(doc, theme, 'Commercial Summary')
+      rowY = doc.y
     }
-    doc.y = Math.max(summaryY, rowY) + 30
+    const panelY = rowY + 18
+    doc.rect(327, panelY, 220, panelH).fill(theme.lightBackground).lineWidth(0.7).stroke(theme.divider)
+
+    let sy = panelY + 18
+    summaryRows.forEach(([label, value]) => {
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(8.5).text(label, 341, sy, { width: 110 })
+      doc.fillColor(theme.text).font('Helvetica').fontSize(9).text(value, 380, sy, { width: 155, align: 'right' })
+      sy += 19
+    })
+
+    // Grand total strip
+    const totalY = panelY + 18 + rowsH + 10
+    doc.rect(328, totalY, 218, stripH).fill(theme.primary)
+    doc.fillColor(theme.background || '#FFFFFF').font('Helvetica-Bold').fontSize(8)
+      .text('GRAND TOTAL', 341, totalY + 14, { width: 120 })
+    doc.fontSize(13)
+      .text(this.formatProposalCurrency(proposal.grandTotal), 341, totalY + 24, { width: 193, align: 'right' })
+
+    if (wordsText) {
+      const wy = totalY + stripH + 10
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(7).text('AMOUNT IN WORDS', 341, wy, { width: 193 })
+      doc.fillColor(theme.secondary).font('Helvetica').fontSize(8)
+        .text(wordsText, 341, wy + 11, { width: 193 })
+    }
+    doc.y = panelY + panelH + 24
   }
 
-  static drawProposalTerms(doc, proposal, company, theme) {
-    const payment = [proposal.paymentTerms, proposal.advanceAmount ? `Advance: ${this.formatProposalCurrency(proposal.advanceAmount)}` : '', proposal.balanceAmount ? `Remaining: ${this.formatProposalCurrency(proposal.balanceAmount)}` : '', proposal.paymentSchedule?.length ? `Schedule: ${proposal.paymentSchedule.map(p => `${p.stage || 'Payment'} (${p.percentage || 0}%)`).join(', ')}` : ''].filter(Boolean)
-    const hasContent = payment.length || proposal.termsAndConditions || proposal.notes || proposal.amountInWords
-    if (!hasContent) return
-    if (doc.y > 590) this.proposalNewPage(doc, theme)
-    this.drawProposalHeading(doc, theme, 'Terms, Payment & Acceptance')
-    payment.forEach(text => {
-      this.ensureProposalSpace(doc, theme, 50)
-      doc.fillColor(theme.text).font('Helvetica').fontSize(9).text(text, 48, doc.y + 6, { width: 499, align: 'justify' })
-      doc.moveDown(0.5)
-    })
-    ;[
-      proposal.termsAndConditions ? ['Terms & Conditions', proposal.termsAndConditions] : null,
-      proposal.notes ? ['Additional Notes', proposal.notes] : null
-    ].filter(Boolean).forEach(([label, value]) => {
-      if (!value) return
-      this.ensureProposalSpace(doc, theme, 80)
-      doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(10).text(label.toUpperCase(), 48, doc.y + 8)
-      doc.fillColor(theme.text).font('Helvetica').fontSize(9).text(value, 48, doc.y + 8, { width: 499, align: 'justify' })
-      doc.moveDown(0.8)
-    })
-    this.ensureProposalSpace(doc, theme, 145)
-    const y = doc.y + 18
-    doc.rect(48, y, 230, 105).lineWidth(0.8).stroke(theme.divider)
-    doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text('CLIENT ACCEPTANCE', 60, y + 15)
-    doc.moveTo(60, y + 70).lineTo(265, y + 70).lineWidth(0.8).stroke(theme.primary)
-    doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text('Authorized signature / date', 60, y + 78)
-    doc.rect(320, y, 230, 105).fill(theme.lightBackground)
-    doc.fillColor(theme.secondary).font('Helvetica-Bold').fontSize(9).text(company?.companyName || 'Datawyn Technologies', 335, y + 15)
-    doc.moveTo(335, y + 70).lineTo(535, y + 70).lineWidth(0.8).stroke(theme.primary)
-    doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(`${company?.authorizedSignatory?.name || 'Authorized signatory'} / date`, 335, y + 78)
-    doc.y = y + 125
+  static drawProposalPaymentTerms(doc, proposal, company, theme) {
+    const schedule = proposal.paymentSchedule || []
+    const advance = Number(proposal.advanceAmount || 0)
+    const balance = proposal.balanceAmount !== undefined && proposal.balanceAmount !== null
+      ? Number(proposal.balanceAmount)
+      : Math.max(0, Number(proposal.grandTotal || 0) - advance)
+    const hasPayment = schedule.length || proposal.paymentTerms || advance > 0 || balance > 0
+    const hasTerms = proposal.termsAndConditions || proposal.notes
+    if (!hasPayment && !hasTerms) return
+
+    this.proposalNewPage(doc, theme)
+    this.drawProposalHeading(doc, theme, 'Payment Terms & Conditions', 'Commercial terms, schedule and conditions')
+
+    // Payment summary stat boxes
+    const stats = []
+    if (advance > 0) stats.push(['Advance Amount', this.formatProposalCurrency(advance)])
+    if (balance > 0) stats.push(['Remaining Balance', this.formatProposalCurrency(balance)])
+    if (schedule.length) stats.push(['Installments', `${schedule.length} payment${schedule.length === 1 ? '' : 's'}`])
+    if (stats.length) {
+      this.ensureProposalSpace(doc, theme, 60)
+      const statW = 499 / stats.length
+      const statY = doc.y + 4
+      stats.forEach(([label, value], index) => {
+        const x = 48 + index * statW
+        doc.rect(x, statY, statW - 8, 40).fill(theme.lightBackground)
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(7)
+          .text(this.proposalSpacedCaps(label), x + 10, statY + 7, { width: statW - 28 })
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10)
+          .text(String(value), x + 10, statY + 19, { width: statW - 28 })
+      })
+      doc.y = statY + 52
+    }
+
+    if (proposal.paymentTerms) {
+      this.drawProposalSubheading(doc, theme, 'Payment Terms')
+      this.drawProposalText(doc, theme, proposal.paymentTerms, { size: 9.5, gapAfter: 12 })
+    }
+
+    if (schedule.length) {
+      this.drawProposalSubheading(doc, theme, 'Payment Schedule')
+      const rows = schedule.map(payment => ({
+        stage: payment.stage || 'Payment',
+        due: this.formatProposalDate(payment.dueDate),
+        pct: payment.percentage !== undefined && payment.percentage !== null ? `${payment.percentage}%` : '',
+        amount: this.formatProposalCurrency(payment.amount || 0),
+        description: payment.description || ''
+      }))
+      rows.forEach((row, index) => {
+        const descH = row.description ? this.proposalTextHeight(doc, row.description, 240, 8, 'Helvetica') : 0
+        const rowH = Math.max(24, 12 + descH + 8)
+        this.ensureProposalSpace(doc, theme, rowH + 6)
+        const y = doc.y + 3
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(9).text(row.stage, 48, y, { width: 170 })
+        doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(row.due, 226, y + 1, { width: 100 })
+        doc.text(row.pct, 334, y + 1, { width: 50, align: 'center' })
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(9).text(row.amount, 392, y, { width: 155, align: 'right' })
+        if (row.description) {
+          doc.fillColor(theme.muted).font('Helvetica').fontSize(8).text(row.description, 226, y + 13, { width: 321 })
+        }
+        doc.moveTo(48, y + rowH - 2).lineTo(547, y + rowH - 2).lineWidth(0.4).stroke(theme.divider)
+        doc.y = y + rowH + 4
+      })
+      doc.y += 8
+    }
+
+    if (proposal.termsAndConditions) {
+      this.drawProposalSubheading(doc, theme, 'Terms & Conditions')
+      const lines = String(proposal.termsAndConditions).split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+      const alreadyNumbered = lines.some(line => /^\d+[.)]\s/.test(line))
+      if (lines.length > 1 && !alreadyNumbered) {
+        lines.forEach((line, index) => {
+          this.drawProposalText(doc, theme, `${index + 1}.  ${line}`, { size: 8.5, gapAfter: 4 })
+        })
+        doc.y += 4
+      } else {
+        this.drawProposalText(doc, theme, proposal.termsAndConditions, { size: 8.5, gapAfter: 8 })
+      }
+    }
+
+    if (proposal.notes) {
+      this.drawProposalSubheading(doc, theme, 'Additional Notes')
+      this.drawProposalText(doc, theme, proposal.notes, { size: 8.5, gapAfter: 8 })
+    }
+  }
+
+  static drawProposalAcceptance(doc, proposal, company, theme) {
+    this.proposalNewPage(doc, theme)
+    this.ensureProposalSpace(doc, theme, 560)
+    this.drawProposalHeading(doc, theme, 'Acceptance & Authorization', 'Review, sign and return this proposal to confirm')
+
+    // Closing statement
+    this.ensureProposalSpace(doc, theme, 60)
+    doc.fillColor(theme.muted).font('Helvetica-Oblique').fontSize(10)
+      .text('We look forward to building something exceptional together.', 100, doc.y + 8, { width: 399, align: 'center' })
+    doc.y += 34
+
+    // Signature panels
+    this.ensureProposalSpace(doc, theme, 260)
+    const panelY = doc.y + 12
+    const panelH = 208
+    const panelW = 230
+    const gap = 39
+    const customer = proposal.customerSnapshot || {}
+
+    const drawPanel = (x, title, fill, lines) => {
+      doc.rect(x, panelY, panelW, panelH).fill(fill).lineWidth(0.8).stroke(theme.divider)
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(8)
+        .text(this.proposalSpacedCaps(title), x + 16, panelY + 14, { width: panelW - 32 })
+      let py = panelY + 34
+      lines.forEach(line => {
+        if (!line) return
+        doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(line.bold ? 11 : 9)
+          .text(line.text, x + 16, py, { width: panelW - 32 })
+        py = doc.y + 4
+      })
+      // Signature area
+      const sigY = panelY + panelH - 62
+      doc.moveTo(x + 16, sigY).lineTo(x + panelW - 66, sigY).lineWidth(0.9).stroke(theme.primary)
+      doc.moveTo(x + panelW - 50, sigY).lineTo(x + panelW - 16, sigY).lineWidth(0.9).stroke(theme.primary)
+      doc.fillColor(theme.muted).font('Helvetica').fontSize(7)
+        .text('Signature', x + 16, sigY + 5, { width: 120 })
+        .text('Date', x + panelW - 50, sigY + 5, { width: 34, align: 'right' })
+    }
+
+    drawPanel(48, 'Client Acceptance', theme.background || '#FFFFFF', [
+      { text: customer.companyName || 'Client Company', bold: true },
+      { text: 'Authorized Person', bold: false },
+      { text: customer.contactPerson || '', bold: false }
+    ])
+    drawPanel(48 + panelW + gap, 'Datawyn Technologies', theme.lightBackground, [
+      { text: company?.companyName || 'Datawyn Technologies', bold: true },
+      { text: company?.authorizedSignatory?.name || 'Authorized Person', bold: false },
+      { text: company?.authorizedSignatory?.designation || '', bold: false }
+    ])
+
+    doc.y = panelY + panelH + 18
+    const validUntil = this.formatProposalDate(proposal.validUntil)
+    doc.fillColor(theme.muted).font('Helvetica').fontSize(8)
+      .text(validUntil ? `This proposal is valid until ${validUntil}.` : 'Thank you for considering Datawyn Technologies.', 48, doc.y, { width: 499, align: 'center' })
   }
 
   static drawProposalSectionDivider(doc, theme) {

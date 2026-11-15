@@ -27,10 +27,10 @@ export const PROPOSAL_THEME_PRESETS = [
     isDefault: false,
     config: {
       themeId: 'modern-dark', primaryColor: '#FFFFFF', secondaryColor: '#D1D5DB', accentColor: '#A3A3A3',
-      backgroundColor: '#FFFFFF', textColor: '#222222', mutedTextColor: '#6B7280', dividerColor: '#D1D5DB',
-      lightBackground: '#F4F4F4', fontFamily: 'Helvetica', bodyFontFamily: 'Helvetica', headingStyle: 'uppercase',
+      backgroundColor: '#1C1C1C', textColor: '#E5E5E5', mutedTextColor: '#9CA3AF', dividerColor: '#3D3D3D',
+      lightBackground: '#2A2A2A', fontFamily: 'Helvetica', bodyFontFamily: 'Helvetica', headingStyle: 'uppercase',
       headerStyle: 'split', footerStyle: 'minimal', showLogo: true, showPageNumbers: true, showCompanyBranding: true,
-      coverBackground: '#111111', coverTextColor: '#FFFFFF'
+      coverBackground: '#0B0B0B', coverTextColor: '#FFFFFF', coverMutedColor: '#9CA3AF'
     }
   },
   {
