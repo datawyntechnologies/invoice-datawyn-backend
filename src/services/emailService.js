@@ -434,6 +434,26 @@ export const EmailService = {
     return { success: true }
   },
 
+  async sendQuotation(quotation, emailData, pdfBuffer, companySettings) {
+    const transporter = initializeTransporter()
+    await transporter.verify()
+    const clientName = quotation.customerSnapshot?.contactPerson || quotation.customerSnapshot?.companyName || 'Valued Client'
+    const companyName = companySettings?.companyName || 'Datawyn Technologies'
+    const message = emailData.message || `Dear ${clientName},\n\nGreetings from ${companyName}!\n\nPlease find attached the quotation for your requested project.\n\nThe attached document contains the project scope, deliverables, estimated timeline, pricing and payment terms.\n\nKindly review the quotation and let us know if you have any questions or require any modifications.\n\nWe look forward to working with you.\n\nBest Regards,\n${companyName}\nDigital Solutions That Build And Scale`
+    const escaped = (value = '') => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
+    const subject = emailData.subject || `Quotation for ${quotation.projectName} – ${quotation.quotationNumber}`
+    const filename = emailData.filename || `Datawyn_Quotation_${quotation.quotationNumber}.pdf`
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM || companySettings?.email || 'noreply@datawyn.com',
+      to: emailData.email,
+      cc: emailData.cc || undefined,
+      subject,
+      html: `<div style="font-family:Arial,sans-serif;color:#222;max-width:680px;margin:auto"><div style="background:#111;color:#fff;padding:28px;text-align:center"><h1 style="margin:0;font-size:24px">QUOTATION</h1><p style="margin:8px 0 0;color:#d1d5db">${escaped(companyName)}</p></div><div style="padding:30px"><p>Dear ${escaped(clientName)},</p><p>${escaped(message).replace(/\n/g, '<br>')}</p><p><strong>Quotation No:</strong> ${escaped(quotation.quotationNumber)}<br><strong>Project:</strong> ${escaped(quotation.projectName)}</p><p style="color:#6b7280;font-size:13px">The quotation PDF is attached to this email.</p><p>Best Regards,<br><strong>${escaped(companyName)}</strong><br>Digital Solutions That Build And Scale</p></div></div>`,
+      attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }]
+    })
+    return { success: true }
+  },
+
   async sendInvoiceWithCustomPDF(invoiceId, { email, message, pdfBuffer, invoice, companySettings }) {
     try {
       console.log('Sending invoice with custom PDF:', invoiceId)

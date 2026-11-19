@@ -1,6 +1,7 @@
 import ProformaInvoice from '../models/ProformaInvoice.js'
 import Invoice from '../models/Invoice.js'
 import Proposal from '../models/Proposal.js'
+import Quotation from '../models/Quotation.js'
 
 // Finds the highest sequence number used this year so deleted documents
 // don't cause duplicate invoice numbers (count + 1 breaks when gaps exist)
@@ -31,5 +32,11 @@ export const generateInvoiceNumber = async (prefix = 'INV') => {
 export const generateProposalNumber = async (prefix = 'PROP') => {
   const year = new Date().getFullYear()
   const nextNumber = await getNextSequence(Proposal, 'proposalNumber', prefix, year)
+  return `${prefix}-${year}-${String(nextNumber).padStart(4, '0')}`
+}
+
+export const generateQuotationNumber = async (prefix = 'DT-QUO') => {
+  const year = new Date().getFullYear()
+  const nextNumber = await getNextSequence(Quotation, 'quotationNumber', prefix, year)
   return `${prefix}-${year}-${String(nextNumber).padStart(4, '0')}`
 }

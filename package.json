@@ -10,6 +10,7 @@
     "seed": "node seed.js",
     "seed:rbac": "node src/seedRBAC.js",
     "rbac:permissions": "node src/addFeaturePermissions.js",
+    "rbac:quotations": "node src/addQuotationPermissions.js",
     "example:rbac": "node examples/rbacUsageExample.js"
   },
   "keywords": [

@@ -50,6 +50,12 @@ const seedRBAC = async () => {
       { name: 'proposals.edit', description: 'Edit proposals', module: 'proposals', action: 'update' },
       { name: 'proposals.delete', description: 'Delete proposals', module: 'proposals', action: 'delete' },
 
+      // Quotation permissions
+      { name: 'quotations.view', description: 'View quotations', module: 'quotations', action: 'read' },
+      { name: 'quotations.create', description: 'Create quotations', module: 'quotations', action: 'create' },
+      { name: 'quotations.edit', description: 'Edit quotations', module: 'quotations', action: 'update' },
+      { name: 'quotations.delete', description: 'Delete quotations', module: 'quotations', action: 'delete' },
+
       // Invoice permissions
       { name: 'invoices.view', description: 'View invoices', module: 'invoices', action: 'read' },
       { name: 'invoices.create', description: 'Create invoices', module: 'invoices', action: 'create' },
